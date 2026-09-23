@@ -1,0 +1,891 @@
+```html
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#111827">
+  <meta name="description" content="رفيق AI — مساعدك الشخصي بالذكاء الاصطناعي">
+  <title>رفيق AI</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    :root {
+      --bg: #f7f8fa;
+      --surface: #ffffff;
+      --surface-2: #f0f2f5;
+      --text: #111827;
+      --muted: #6b7280;
+      --border: #e5e7eb;
+      --accent: #2563eb;
+      --accent-dark: #1d4ed8;
+      --user: #2563eb;
+      --assistant: #ffffff;
+      --danger: #dc2626;
+      --shadow: 0 8px 30px rgba(0,0,0,.08);
+      --radius: 18px;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      font-family: Arial, "Noto Sans Arabic", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    button, textarea, input {
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    .app {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      position: relative;
+      overflow: hidden;
+    }
+
+    /* ===== Sidebar ===== */
+
+    .sidebar {
+      width: 285px;
+      height: 100%;
+      background: var(--surface);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      z-index: 20;
+      transition: transform .25s ease;
+    }
+
+    .sidebar-header {
+      padding: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .brand-icon {
+      width: 42px;
+      height: 42px;
+      border-radius: 14px;
+      display: grid;
+      place-items: center;
+      background: var(--accent);
+      color: white;
+      font-weight: 700;
+      font-size: 18px;
+    }
+
+    .brand-text strong {
+      display: block;
+      font-size: 17px;
+    }
+
+    .brand-text span {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .new-chat {
+      margin: 16px;
+      padding: 13px 15px;
+      border: 0;
+      border-radius: 14px;
+      background: var(--accent);
+      color: white;
+      font-weight: 700;
+    }
+
+    .new-chat:active {
+      background: var(--accent-dark);
+    }
+
+    .nav {
+      padding: 0 10px;
+      overflow-y: auto;
+      flex: 1;
+    }
+
+    .nav-section {
+      color: var(--muted);
+      font-size: 12px;
+      padding: 12px 10px 7px;
+    }
+
+    .nav-button {
+      width: 100%;
+      border: 0;
+      background: transparent;
+      padding: 12px 11px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      text-align: right;
+      color: var(--text);
+      margin-bottom: 3px;
+    }
+
+    .nav-button:hover {
+      background: var(--surface-2);
+    }
+
+    .nav-icon {
+      width: 22px;
+      text-align: center;
+      font-size: 17px;
+    }
+
+    .sidebar-footer {
+      padding: 12px;
+      border-top: 1px solid var(--border);
+    }
+
+    .profile-button {
+      width: 100%;
+      border: 0;
+      background: transparent;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px;
+      border-radius: 12px;
+      text-align: right;
+    }
+
+    .profile-avatar {
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      background: var(--surface-2);
+      display: grid;
+      place-items: center;
+      font-size: 17px;
+    }
+
+    .profile-button small {
+      display: block;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    /* ===== Main ===== */
+
+    .main {
+      flex: 1;
+      min-width: 0;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .topbar {
+      height: 64px;
+      min-height: 64px;
+      background: rgba(255,255,255,.94);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 18px;
+      z-index: 5;
+    }
+
+    .topbar-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .menu-button {
+      width: 40px;
+      height: 40px;
+      border: 0;
+      background: transparent;
+      border-radius: 12px;
+      font-size: 21px;
+      display: none;
+    }
+
+    .topbar-title strong {
+      font-size: 17px;
+    }
+
+    .status {
+      color: #16a34a;
+      font-size: 11px;
+      margin-top: 3px;
+    }
+
+    .topbar-actions {
+      display: flex;
+      gap: 5px;
+    }
+
+    .icon-button {
+      width: 40px;
+      height: 40px;
+      border: 0;
+      background: transparent;
+      border-radius: 12px;
+      font-size: 18px;
+    }
+
+    .icon-button:hover {
+      background: var(--surface-2);
+    }
+
+    /* ===== Chat ===== */
+
+    .chat {
+      flex: 1;
+      overflow-y: auto;
+      padding: 28px 18px 170px;
+      scroll-behavior: smooth;
+    }
+
+    .chat-inner {
+      width: 100%;
+      max-width: 860px;
+      margin: 0 auto;
+    }
+
+    .welcome {
+      min-height: calc(100vh - 280px);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 30px 10px;
+    }
+
+    .welcome-icon {
+      width: 72px;
+      height: 72px;
+      border-radius: 24px;
+      background: var(--accent);
+      color: white;
+      display: grid;
+      place-items: center;
+      font-size: 28px;
+      font-weight: 700;
+      box-shadow: var(--shadow);
+      margin-bottom: 20px;
+    }
+
+    .welcome h1 {
+      font-size: 27px;
+      margin-bottom: 9px;
+    }
+
+    .welcome p {
+      color: var(--muted);
+      max-width: 520px;
+      line-height: 1.8;
+      font-size: 14px;
+    }
+
+    .suggestions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      width: min(620px, 100%);
+      margin-top: 25px;
+    }
+
+    .suggestion {
+      border: 1px solid var(--border);
+      background: var(--surface);
+      border-radius: 15px;
+      padding: 14px;
+      text-align: right;
+      color: var(--text);
+      line-height: 1.5;
+    }
+
+    .suggestion:hover {
+      border-color: #cbd5e1;
+      background: #fafafa;
+    }
+
+    .message {
+      display: flex;
+      gap: 12px;
+      margin: 20px 0;
+      align-items: flex-start;
+    }
+
+    .message.user {
+      flex-direction: row-reverse;
+    }
+
+    .message-avatar {
+      flex: 0 0 36px;
+      width: 36px;
+      height: 36px;
+      border-radius: 12px;
+      display: grid;
+      place-items: center;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .message.assistant .message-avatar {
+      background: var(--accent);
+      color: white;
+    }
+
+    .message.user .message-avatar {
+      background: var(--surface-2);
+      color: var(--text);
+    }
+
+    .message-content {
+      max-width: min(760px, calc(100% - 50px));
+      padding: 13px 15px;
+      border-radius: 17px;
+      line-height: 1.8;
+      font-size: 14px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .message.assistant .message-content {
+      background: var(--assistant);
+      border: 1px solid var(--border);
+    }
+
+    .message.user .message-content {
+      background: var(--user);
+      color: white;
+    }
+
+    /* ===== Composer ===== */
+
+    .composer-area {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      padding: 14px 18px 18px;
+      pointer-events: none;
+    }
+
+    .composer-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      pointer-events: auto;
+    }
+
+    .composer {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      border-radius: 20px;
+      padding: 9px;
+      display: flex;
+      align-items: flex-end;
+      gap: 7px;
+    }
+
+    .composer textarea {
+      flex: 1;
+      min-height: 44px;
+      max-height: 150px;
+      border: 0;
+      outline: 0;
+      resize: none;
+      background: transparent;
+      padding: 12px 8px;
+      line-height: 1.6;
+      color: var(--text);
+    }
+
+    .composer-button {
+      flex: 0 0 42px;
+      width: 42px;
+      height: 42px;
+      border: 0;
+      border-radius: 13px;
+      background: var(--surface-2);
+      color: var(--text);
+      display: grid;
+      place-items: center;
+      font-size: 17px;
+    }
+
+    .send-button {
+      background: var(--accent);
+      color: white;
+    }
+
+    .composer-note {
+      text-align: center;
+      color: var(--muted);
+      font-size: 10px;
+      margin-top: 7px;
+    }
+
+    /* ===== Overlay / Mobile ===== */
+
+    .overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.35);
+      z-index: 15;
+    }
+
+    @media (max-width: 800px) {
+      .sidebar {
+        position: fixed;
+        right: 0;
+        top: 0;
+        transform: translateX(100%);
+        box-shadow: -10px 0 30px rgba(0,0,0,.12);
+      }
+
+      .sidebar.open {
+        transform: translateX(0);
+      }
+
+      .overlay.open {
+        display: block;
+      }
+
+      .menu-button {
+        display: block;
+      }
+
+      .topbar {
+        padding: 0 10px;
+      }
+
+      .topbar-title strong {
+        font-size: 15px;
+      }
+
+      .chat {
+        padding: 20px 11px 165px;
+      }
+
+      .welcome {
+        min-height: calc(100vh - 300px);
+      }
+
+      .welcome h1 {
+        font-size: 23px;
+      }
+
+      .suggestions {
+        grid-template-columns: 1fr;
+      }
+
+      .composer-area {
+        padding: 9px 9px 12px;
+      }
+
+      .composer {
+        border-radius: 17px;
+      }
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f1115;
+        --surface: #171a21;
+        --surface-2: #222630;
+        --text: #f3f4f6;
+        --muted: #9ca3af;
+        --border: #2b303b;
+        --assistant: #171a21;
+        --shadow: 0 8px 30px rgba(0,0,0,.3);
+      }
+
+      .topbar {
+        background: rgba(23,26,33,.94);
+      }
+
+      .suggestion:hover {
+        background: var(--surface-2);
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="app">
+
+    <div class="overlay" id="overlay"></div>
+
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+
+      <div class="sidebar-header">
+        <div class="brand">
+          <div class="brand-icon">ر</div>
+          <div class="brand-text">
+            <strong>رفيق AI</strong>
+            <span>مساعدك الشخصي بالذكاء الاصطناعي</span>
+          </div>
+        </div>
+
+        <button class="icon-button" id="closeSidebar" aria-label="إغلاق القائمة">×</button>
+      </div>
+
+      <button class="new-chat" id="newChat">＋ محادثة جديدة</button>
+
+      <nav class="nav">
+
+        <div class="nav-section">الرئيسية</div>
+
+        <button class="nav-button" data-section="chats">
+          <span class="nav-icon">💬</span>
+          <span>محادثاتي</span>
+        </button>
+
+        <button class="nav-button" data-section="memory">
+          <span class="nav-icon">🧠</span>
+          <span>ذاكرتي</span>
+        </button>
+
+        <div class="nav-section">قدرات رفيق</div>
+
+        <button class="nav-button" data-section="search">
+          <span class="nav-icon">🔎</span>
+          <span>البحث على الويب</span>
+        </button>
+
+        <button class="nav-button" data-section="files">
+          <span class="nav-icon">📎</span>
+          <span>الملفات</span>
+        </button>
+
+        <button class="nav-button" data-section="tools">
+          <span class="nav-icon">🛠️</span>
+          <span>الأدوات</span>
+        </button>
+
+        <button class="nav-button" data-section="tasks">
+          <span class="nav-icon">⏰</span>
+          <span>المهام والتذكيرات</span>
+        </button>
+
+        <div class="nav-section">الحساب</div>
+
+        <button class="nav-button" data-section="settings">
+          <span class="nav-icon">⚙️</span>
+          <span>الإعدادات</span>
+        </button>
+
+      </nav>
+
+      <div class="sidebar-footer">
+        <button class="profile-button" data-section="account">
+          <div class="profile-avatar">👤</div>
+          <div>
+            <strong>حسابي</strong>
+            <small>تسجيل الدخول والمزامنة</small>
+          </div>
+        </button>
+      </div>
+
+    </aside>
+
+    <!-- Main -->
+    <main class="main">
+
+      <header class="topbar">
+        <div class="topbar-title">
+          <button class="menu-button" id="openSidebar" aria-label="فتح القائمة">☰</button>
+
+          <div>
+            <strong>رفيق AI</strong>
+            <div class="status">● متصل</div>
+          </div>
+        </div>
+
+        <div class="topbar-actions">
+          <button class="icon-button" id="topNewChat" aria-label="محادثة جديدة">＋</button>
+        </div>
+      </header>
+
+      <section class="chat" id="chat">
+        <div class="chat-inner" id="chatInner">
+
+          <div class="welcome" id="welcome">
+            <div class="welcome-icon">ر</div>
+
+            <h1>مرحبًا، أنا رفيق</h1>
+
+            <p>
+              أنا رفيق، مساعدك الشخصي بالذكاء الاصطناعي.
+              أخبرني بما تريد، وسأساعدك في التفكير، البحث، التحليل وإنجاز المهام.
+            </p>
+
+            <div class="suggestions">
+              <button class="suggestion" data-prompt="ساعدني في التخطيط لمشروع جديد">
+                💡 ساعدني في التخطيط لمشروع جديد
+              </button>
+
+              <button class="suggestion" data-prompt="اشرح لي موضوعًا بطريقة بسيطة">
+                📚 اشرح لي موضوعًا بطريقة بسيطة
+              </button>
+
+              <button class="suggestion" data-prompt="حلل هذه الفكرة معي خطوة بخطوة">
+                🔎 حلل هذه الفكرة معي
+              </button>
+
+              <button class="suggestion" data-prompt="ما الذي تستطيع مساعدتي فيه؟">
+                ✨ ماذا تستطيع أن تفعل؟
+              </button>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- Composer -->
+      <div class="composer-area">
+        <div class="composer-wrap">
+
+          <div class="composer">
+
+            <button
+              class="composer-button"
+              id="attachButton"
+              aria-label="إضافة ملف"
+              title="إضافة ملف">
+              📎
+            </button>
+
+            <textarea
+              id="messageInput"
+              rows="1"
+              placeholder="اكتب رسالتك إلى رفيق..."
+              aria-label="رسالتك">
+            </textarea>
+
+            <button
+              class="composer-button send-button"
+              id="sendButton"
+              aria-label="إرسال">
+              ➤
+            </button>
+
+          </div>
+
+          <div class="composer-note">
+            رفيق AI يمكنه مساعدتك في التفكير والبحث وتحليل المعلومات وإنجاز المهام.
+          </div>
+
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <script>
+    const sidebar = document.getElementById("sidebar");
+    const overlay = document.getElementById("overlay");
+    const openSidebar = document.getElementById("openSidebar");
+    const closeSidebar = document.getElementById("closeSidebar");
+    const newChat = document.getElementById("newChat");
+    const topNewChat = document.getElementById("topNewChat");
+    const chatInner = document.getElementById("chatInner");
+    const chat = document.getElementById("chat");
+    const welcome = document.getElementById("welcome");
+    const messageInput = document.getElementById("messageInput");
+    const sendButton = document.getElementById("sendButton");
+    const attachButton = document.getElementById("attachButton");
+
+    function openMenu() {
+      sidebar.classList.add("open");
+      overlay.classList.add("open");
+    }
+
+    function closeMenu() {
+      sidebar.classList.remove("open");
+      overlay.classList.remove("open");
+    }
+
+    openSidebar.addEventListener("click", openMenu);
+    closeSidebar.addEventListener("click", closeMenu);
+    overlay.addEventListener("click", closeMenu);
+
+    function resetChat() {
+      chatInner.innerHTML = "";
+      chatInner.appendChild(createWelcome());
+      messageInput.value = "";
+      messageInput.style.height = "auto";
+      chat.scrollTop = 0;
+    }
+
+    function createWelcome() {
+      const wrapper = document.createElement("div");
+      wrapper.className = "welcome";
+
+      wrapper.innerHTML = `
+        <div class="welcome-icon">ر</div>
+        <h1>مرحبًا، أنا رفيق</h1>
+        <p>
+          أنا رفيق، مساعدك الشخصي بالذكاء الاصطناعي.
+          أخبرني بما تريد، وسأساعدك في التفكير، البحث، التحليل وإنجاز المهام.
+        </p>
+
+        <div class="suggestions">
+          <button class="suggestion" data-prompt="ساعدني في التخطيط لمشروع جديد">
+            💡 ساعدني في التخطيط لمشروع جديد
+          </button>
+
+          <button class="suggestion" data-prompt="اشرح لي موضوعًا بطريقة بسيطة">
+            📚 اشرح لي موضوعًا بطريقة بسيطة
+          </button>
+
+          <button class="suggestion" data-prompt="حلل هذه الفكرة معي خطوة بخطوة">
+            🔎 حلل هذه الفكرة معي
+          </button>
+
+          <button class="suggestion" data-prompt="ما الذي تستطيع مساعدتي فيه؟">
+            ✨ ماذا تستطيع أن تفعل؟
+          </button>
+        </div>
+      `;
+
+      wrapper.querySelectorAll(".suggestion").forEach(button => {
+        button.addEventListener("click", () => {
+          messageInput.value = button.dataset.prompt;
+          autoResize();
+          messageInput.focus();
+        });
+      });
+
+      return wrapper;
+    }
+
+    newChat.addEventListener("click", () => {
+      resetChat();
+      closeMenu();
+    });
+
+    topNewChat.addEventListener("click", resetChat);
+
+    function addMessage(role, text) {
+      if (welcome && welcome.parentNode) {
+        welcome.remove();
+      }
+
+      const message = document.createElement("div");
+      message.className = `message ${role}`;
+
+      const avatar = document.createElement("div");
+      avatar.className = "message-avatar";
+      avatar.textContent = role === "assistant" ? "ر" : "أنت";
+
+      const content = document.createElement("div");
+      content.className = "message-content";
+      content.textContent = text;
+
+      message.appendChild(avatar);
+      message.appendChild(content);
+      chatInner.appendChild(message);
+
+      requestAnimationFrame(() => {
+        chat.scrollTop = chat.scrollHeight;
+      });
+
+      return message;
+    }
+
+    function autoResize() {
+      messageInput.style.height = "auto";
+      messageInput.style.height =
+        Math.min(messageInput.scrollHeight, 150) + "px";
+    }
+
+    messageInput.addEventListener("input", autoResize);
+
+    messageInput.addEventListener("keydown", event => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        sendMessage();
+      }
+    });
+
+    sendButton.addEventListener("click", sendMessage);
+
+    function sendMessage() {
+      const text = messageInput.value.trim();
+
+      if (!text) return;
+
+      addMessage("user", text);
+
+      messageInput.value = "";
+      messageInput.style.height = "auto";
+
+      /*
+       * الاتصال الحقيقي بالـWorker سيُضاف في المرحلة التالية.
+       * لا نضع اتصالًا وهميًا هنا حتى لا نعتبر الوظيفة مكتملة
+       * قبل ربطها فعليًا بالـBackend.
+       */
+
+      addMessage(
+        "assistant",
+        "واجهة رفيق جاهزة. سيتم الآن ربط المحادثة بالـBackend الحقيقي."
+      );
+    }
+
+    attachButton.addEventListener("click", () => {
+      alert("رفع الملفات سيتم تفعيله عند ربط طبقة الملفات بالـBackend.");
+    });
+
+    document.querySelectorAll(".nav-button, .profile-button").forEach(button => {
+      button.addEventListener("click", () => {
+        const section = button.dataset.section;
+
+        if (section) {
+          alert(
+            "قسم " +
+            section +
+            " موجود في بنية رفيق وسيتم ربطه بالوظيفة الحقيقية في مرحلته."
+          );
+        }
+
+        closeMenu();
+      });
+    });
+
+    document.querySelectorAll(".suggestion").forEach(button => {
+      button.addEventListener("click", () => {
+        messageInput.value = button.dataset.prompt;
+        autoResize();
+        messageInput.focus();
+      });
+    });
+  </script>
+</body>
+</html>
+```
