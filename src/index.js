@@ -48,15 +48,6 @@ async function ensureDatabase(db) {
         content TEXT NOT NULL,
         created_at TEXT NOT NULL
       )
-    `),
-
-    db.prepare(`
-      CREATE TABLE IF NOT EXISTS memories (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id TEXT NOT NULL,
-        memory TEXT NOT NULL,
-        created_at TEXT NOT NULL
-      )
     `)
   ]);
 }
@@ -96,7 +87,13 @@ async function saveConversation(db, conversationId, userId) {
   ).run();
 }
 
-async function saveMessage(db, conversationId, userId, role, content) {
+async function saveMessage(
+  db,
+  conversationId,
+  userId,
+  role,
+  content
+) {
   await db.prepare(`
     INSERT INTO messages
     (conversation_id, user_id, role, content, created_at)
@@ -110,7 +107,11 @@ async function saveMessage(db, conversationId, userId, role, content) {
   ).run();
 }
 
-async function getConversationHistory(db, conversationId, limit = 30) {
+async function getConversationHistory(
+  db,
+  conversationId,
+  limit = 30
+) {
   const result = await db.prepare(`
     SELECT role, content
     FROM messages
@@ -125,11 +126,28 @@ async function getConversationHistory(db, conversationId, limit = 30) {
   return (result.results || []).reverse();
 }
 
+/*
+  جدول memories الموجود أصلًا في D1 يحتوي على:
+  id
+  user_id
+  category
+  content
+  importance
+  source
+  confirmed
+  active
+  created_at
+
+  لذلك نستخدم content بدل memory.
+*/
+
 async function getUserMemories(db, userId) {
   const result = await db.prepare(`
-    SELECT id, memory, created_at
+    SELECT id, category, content, importance, source,
+           confirmed, active, created_at
     FROM memories
     WHERE user_id = ?
+      AND active = 1
     ORDER BY id DESC
     LIMIT 100
   `).bind(userId).all();
@@ -146,18 +164,42 @@ async function saveMemory(db, userId, memory) {
 
   await db.prepare(`
     INSERT INTO memories
-    (user_id, memory, created_at)
-    VALUES (?, ?, ?)
+    (
+      user_id,
+      category,
+      content,
+      importance,
+      source,
+      confirmed,
+      active,
+      created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
     userId,
+    "general",
     clean,
+    3,
+    "conversation",
+    0,
+    1,
     new Date().toISOString()
   ).run();
 }
 
-async function deleteMemory(db, userId, memoryId) {
+async function deleteMemory(
+  db,
+  userId,
+  memoryId
+) {
+  /*
+    لا نحذف سجل الذاكرة نهائيًا.
+    نجعله غير نشط للحفاظ على البيانات.
+  */
+
   await db.prepare(`
-    DELETE FROM memories
+    UPDATE memories
+    SET active = 0
     WHERE id = ? AND user_id = ?
   `).bind(
     Number(memoryId),
@@ -166,11 +208,19 @@ async function deleteMemory(db, userId, memoryId) {
 }
 
 function buildSystemInstruction(memories) {
-  let memoryText = "لا توجد معلومات محفوظة عن المستخدم حتى الآن.";
+  let memoryText =
+    "لا توجد معلومات محفوظة عن المستخدم حتى الآن.";
 
   if (memories.length > 0) {
     memoryText = memories
-      .map(item => `- ${item.memory}`)
+      .map(item => {
+        const category =
+          item.category
+            ? ` [${item.category}]`
+            : "";
+
+        return `- ${item.content}${category}`;
+      })
       .join("\n");
   }
 
@@ -186,6 +236,7 @@ function buildSystemInstruction(memories) {
 قواعد مهمة:
 - كن مفيدًا ودقيقًا وواضحًا.
 - استخدم سياق المحادثة السابقة عندما يكون مفيدًا.
+- استخدم المعلومات المحفوظة عن المستخدم لتقديم إجابات أكثر تخصيصًا.
 - لا تدّعِ أنك تملك معلومات لا تملكها.
 - لا تكشف مفاتيح API أو الأسرار أو تفاصيل البنية الداخلية.
 - إذا لم تعرف شيئًا، قل ذلك بوضوح.
@@ -197,16 +248,26 @@ ${memoryText}
 `;
 }
 
-async function callGemini(env, history, memories, userMessage) {
+async function callGemini(
+  env,
+  history,
+  memories,
+  userMessage
+) {
   if (!env.GEMINI_API_KEY) {
-    throw new Error("GEMINI_API_KEY غير موجود في Worker.");
+    throw new Error(
+      "GEMINI_API_KEY غير موجود في Worker."
+    );
   }
 
   const contents = [];
 
   for (const item of history) {
     contents.push({
-      role: item.role === "assistant" ? "model" : "user",
+      role:
+        item.role === "assistant"
+          ? "model"
+          : "user",
       parts: [
         {
           text: item.content
@@ -228,7 +289,8 @@ async function callGemini(env, history, memories, userMessage) {
     system_instruction: {
       parts: [
         {
-          text: buildSystemInstruction(memories)
+          text:
+            buildSystemInstruction(memories)
         }
       ]
     },
@@ -241,16 +303,23 @@ async function callGemini(env, history, memories, userMessage) {
     }
   };
 
-  const response = await fetch(GEMINI_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-goog-api-key": env.GEMINI_API_KEY
-    },
-    body: JSON.stringify(payload)
-  });
+  const response = await fetch(
+    GEMINI_URL,
+    {
+      method: "POST",
 
-  const raw = await response.text();
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key":
+          env.GEMINI_API_KEY
+      },
+
+      body: JSON.stringify(payload)
+    }
+  );
+
+  const raw =
+    await response.text();
 
   if (!response.ok) {
     throw new Error(
@@ -263,7 +332,9 @@ async function callGemini(env, history, memories, userMessage) {
   try {
     data = JSON.parse(raw);
   } catch {
-    throw new Error("Gemini أعاد استجابة غير صالحة.");
+    throw new Error(
+      "Gemini أعاد استجابة غير صالحة."
+    );
   }
 
   const reply =
@@ -273,17 +344,23 @@ async function callGemini(env, history, memories, userMessage) {
       .trim();
 
   if (!reply) {
-    throw new Error("Gemini لم يُرجع نصًا.");
+    throw new Error(
+      "Gemini لم يُرجع نصًا."
+    );
   }
 
   return reply;
 }
 
-async function handleChat(request, env) {
+async function handleChat(
+  request,
+  env
+) {
   if (!env.DB) {
     return json({
       ok: false,
-      error: "D1 binding DB غير موجود."
+      error:
+        "D1 binding DB غير موجود."
     }, 500);
   }
 
@@ -301,13 +378,20 @@ async function handleChat(request, env) {
   }
 
   const userId =
-    String(body.user_id || "").trim();
+    String(
+      body.user_id || ""
+    ).trim();
 
   const conversationId =
-    String(body.conversation_id || crypto.randomUUID()).trim();
+    String(
+      body.conversation_id ||
+      crypto.randomUUID()
+    ).trim();
 
   const message =
-    String(body.message || "").trim();
+    String(
+      body.message || ""
+    ).trim();
 
   if (!userId) {
     return json({
@@ -323,7 +407,10 @@ async function handleChat(request, env) {
     }, 400);
   }
 
-  await saveUser(env.DB, userId);
+  await saveUser(
+    env.DB,
+    userId
+  );
 
   await saveConversation(
     env.DB,
@@ -355,18 +442,24 @@ async function handleChat(request, env) {
   let reply;
 
   try {
-    reply = await callGemini(
-      env,
-      history,
-      memories,
-      message
-    );
+    reply =
+      await callGemini(
+        env,
+        history,
+        memories,
+        message
+      );
   } catch (error) {
-    console.error("Gemini error:", error);
+    console.error(
+      "Gemini error:",
+      error
+    );
 
     return json({
       ok: false,
-      error: error?.message || "حدث خطأ أثناء الاتصال بالذكاء الاصطناعي."
+      error:
+        error?.message ||
+        "حدث خطأ أثناء الاتصال بالذكاء الاصطناعي."
     }, 500);
   }
 
@@ -381,15 +474,20 @@ async function handleChat(request, env) {
   return json({
     ok: true,
     reply,
-    conversation_id: conversationId
+    conversation_id:
+      conversationId
   });
 }
 
-async function getMemories(request, env) {
+async function getMemories(
+  request,
+  env
+) {
   if (!env.DB) {
     return json({
       ok: false,
-      error: "D1 binding DB غير موجود."
+      error:
+        "D1 binding DB غير موجود."
     }, 500);
   }
 
@@ -407,7 +505,9 @@ async function getMemories(request, env) {
   }
 
   const userId =
-    String(body.user_id || "").trim();
+    String(
+      body.user_id || ""
+    ).trim();
 
   if (!userId) {
     return json({
@@ -428,11 +528,15 @@ async function getMemories(request, env) {
   });
 }
 
-async function handleDeleteMemory(request, env) {
+async function handleDeleteMemory(
+  request,
+  env
+) {
   if (!env.DB) {
     return json({
       ok: false,
-      error: "D1 binding DB غير موجود."
+      error:
+        "D1 binding DB غير موجود."
     }, 500);
   }
 
@@ -450,7 +554,9 @@ async function handleDeleteMemory(request, env) {
   }
 
   const userId =
-    String(body.user_id || "").trim();
+    String(
+      body.user_id || ""
+    ).trim();
 
   const memoryId =
     Number(body.memory_id);
@@ -458,7 +564,8 @@ async function handleDeleteMemory(request, env) {
   if (!userId || !memoryId) {
     return json({
       ok: false,
-      error: "user_id و memory_id مطلوبان."
+      error:
+        "user_id و memory_id مطلوبان."
     }, 400);
   }
 
@@ -473,11 +580,15 @@ async function handleDeleteMemory(request, env) {
   });
 }
 
-async function handleSaveMemory(request, env) {
+async function handleSaveMemory(
+  request,
+  env
+) {
   if (!env.DB) {
     return json({
       ok: false,
-      error: "D1 binding DB غير موجود."
+      error:
+        "D1 binding DB غير موجود."
     }, 500);
   }
 
@@ -495,20 +606,33 @@ async function handleSaveMemory(request, env) {
   }
 
   const userId =
-    String(body.user_id || "").trim();
+    String(
+      body.user_id || ""
+    ).trim();
 
   const memory =
-    String(body.memory || "").trim();
+    String(
+      body.memory || ""
+    ).trim();
 
   if (!userId || !memory) {
     return json({
       ok: false,
-      error: "user_id و memory مطلوبان."
+      error:
+        "user_id و memory مطلوبان."
     }, 400);
   }
 
-  await saveUser(env.DB, userId);
-  await saveMemory(env.DB, userId, memory);
+  await saveUser(
+    env.DB,
+    userId
+  );
+
+  await saveMemory(
+    env.DB,
+    userId,
+    memory
+  );
 
   return json({
     ok: true
@@ -516,67 +640,104 @@ async function handleSaveMemory(request, env) {
 }
 
 export default {
-  async fetch(request, env) {
-    if (request.method === "OPTIONS") {
-      return new Response(null, {
-        status: 204,
-        headers: CORS_HEADERS
-      });
+  async fetch(
+    request,
+    env
+  ) {
+    if (
+      request.method ===
+      "OPTIONS"
+    ) {
+      return new Response(
+        null,
+        {
+          status: 204,
+          headers:
+            CORS_HEADERS
+        }
+      );
     }
 
     try {
-      if (request.method === "GET") {
+      if (
+        request.method ===
+        "GET"
+      ) {
         return json({
           ok: true,
           service: "Rafiq AI",
           status: "online",
-          model: GEMINI_MODEL
+          model:
+            GEMINI_MODEL
         });
       }
 
-      if (request.method !== "POST") {
+      if (
+        request.method !==
+        "POST"
+      ) {
         return json({
           ok: false,
-          error: "Method not allowed"
+          error:
+            "Method not allowed"
         }, 405);
       }
 
       let body;
 
       try {
-        body = await request.clone().json();
+        body =
+          await request
+            .clone()
+            .json();
       } catch {
         return json({
           ok: false,
-          error: "Invalid JSON body."
+          error:
+            "Invalid JSON body."
         }, 400);
       }
 
       const action =
-        String(body.action || "chat").trim();
+        String(
+          body.action ||
+          "chat"
+        ).trim();
 
-      if (action === "chat") {
+      if (
+        action ===
+        "chat"
+      ) {
         return await handleChat(
           request,
           env
         );
       }
 
-      if (action === "get_memories") {
+      if (
+        action ===
+        "get_memories"
+      ) {
         return await getMemories(
           request,
           env
         );
       }
 
-      if (action === "delete_memory") {
+      if (
+        action ===
+        "delete_memory"
+      ) {
         return await handleDeleteMemory(
           request,
           env
         );
       }
 
-      if (action === "save_memory") {
+      if (
+        action ===
+        "save_memory"
+      ) {
         return await handleSaveMemory(
           request,
           env
@@ -585,15 +746,21 @@ export default {
 
       return json({
         ok: false,
-        error: `Unknown action: ${action}`
+        error:
+          `Unknown action: ${action}`
       }, 400);
 
     } catch (error) {
-      console.error("Worker error:", error);
+      console.error(
+        "Worker error:",
+        error
+      );
 
       return json({
         ok: false,
-        error: error?.message || "Internal server error."
+        error:
+          error?.message ||
+          "Internal server error."
       }, 500);
     }
   }
