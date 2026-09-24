@@ -76,8 +76,7 @@ function json(data, status = 200) {
     {
       status,
       headers: {
-        "Content-Type":
-          "application/json; charset=UTF-8",
+        "Content-Type": "application/json; charset=UTF-8",
         ...CORS_HEADERS
       }
     }
@@ -86,6 +85,71 @@ function json(data, status = 200) {
 
 function newId() {
   return crypto.randomUUID();
+}
+
+/*
+ * تهيئة قاعدة بيانات D1 تلقائيًا.
+ *
+ * هذه الخطوة تمنع فشل Worker إذا كانت الجداول
+ * لم تُنشأ مسبقًا في قاعدة البيانات.
+ */
+async function ensureDatabase(env) {
+  await env.DB.batch([
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )
+    `),
+
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS conversations (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        gemini_interaction_id TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )
+    `),
+
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS memories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        category TEXT NOT NULL,
+        content TEXT NOT NULL,
+        importance INTEGER DEFAULT 3,
+        source TEXT DEFAULT 'conversation',
+        confirmed INTEGER DEFAULT 0,
+        active INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )
+    `),
+
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )
+    `),
+
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS memory_actions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        memory_id INTEGER NOT NULL,
+        action TEXT NOT NULL,
+        details TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )
+    `)
+  ]);
 }
 
 async function ensureUser(env, userId) {
@@ -400,8 +464,7 @@ async function geminiRequest(
         ...options,
 
         headers: {
-          "Content-Type":
-            "application/json",
+          "Content-Type": "application/json",
 
           "x-goog-api-key":
             env.GEMINI_API_KEY,
@@ -434,13 +497,6 @@ async function geminiRequest(
   };
 }
 
-/*
- * إنشاء Interaction في الخلفية.
- *
- * لا ننتظر Gemini هنا.
- * هذا هو الجزء الذي يمنع بقاء طلب المتصفح
- * عالقًا أثناء تفكير النموذج.
- */
 async function createBackgroundInteraction(
   env,
   input,
@@ -482,9 +538,6 @@ async function createBackgroundInteraction(
   );
 }
 
-/*
- * جلب حالة Interaction.
- */
 async function getInteraction(
   env,
   interactionId
@@ -493,11 +546,7 @@ async function getInteraction(
     env,
     `/${encodeURIComponent(interactionId)}`,
     {
-      method: "GET",
-      headers: {
-        "Content-Type":
-          "application/json"
-      }
+      method: "GET"
     }
   );
 }
@@ -547,8 +596,7 @@ async function handleChatStart(
   );
 
   let conversationId =
-    typeof body.conversation_id ===
-      "string" &&
+    typeof body.conversation_id === "string" &&
     body.conversation_id.trim()
       ? body.conversation_id.trim()
       : null;
@@ -562,8 +610,7 @@ async function handleChatStart(
   }
 
   const previousInteractionId =
-    typeof body.previous_interaction_id ===
-      "string" &&
+    typeof body.previous_interaction_id === "string" &&
     body.previous_interaction_id.trim()
       ? body.previous_interaction_id.trim()
       : null;
@@ -625,13 +672,12 @@ ${message}
     return json({
       ok: false,
       error:
-        "لم يعُد Gemini بمعرّف Interaction."
+        "لم يُعد Gemini بمعرّف Interaction."
     }, 502);
   }
 
   return json({
     ok: true,
-
     pending: true,
 
     interaction_id:
@@ -646,11 +692,6 @@ ${message}
   });
 }
 
-/*
- * إنهاء Interaction بعد أن يصبح completed.
- *
- * هذه العملية تحفظ الرد والذاكرة في D1.
- */
 async function handleInteractionStatus(
   request,
   env
@@ -724,7 +765,15 @@ async function handleInteractionStatus(
     interaction.status ||
     "unknown";
 
-  if (status === "in_progress") {
+  /*
+   * حالات الانتظار:
+   * queued = الطلب في الطابور
+   * in_progress = Gemini يعمل عليه
+   */
+  if (
+    status === "queued" ||
+    status === "in_progress"
+  ) {
     return json({
       ok: true,
       pending: true,
@@ -732,6 +781,22 @@ async function handleInteractionStatus(
       interaction_id:
         interactionId
     });
+  }
+
+  /*
+   * حالة requires_action
+   * لا نعتبرها نجاحًا أو فشلًا صامتًا.
+   */
+  if (status === "requires_action") {
+    return json({
+      ok: false,
+      pending: false,
+      status,
+      interaction_id:
+        interactionId,
+      error:
+        "Gemini يحتاج إلى إجراء إضافي قبل إكمال المهمة."
+    }, 502);
   }
 
   if (
@@ -802,7 +867,9 @@ async function handleInteractionStatus(
           });
         }
       } catch {
-        // لا نفشل الرد بسبب فشل حفظ ذاكرة.
+        /*
+         * لا نفشل الرد بسبب فشل حفظ الذاكرة.
+         */
       }
     }
   }
@@ -979,6 +1046,9 @@ async function deleteMemory(
 
 export default {
   async fetch(request, env) {
+    /*
+     * CORS preflight
+     */
     if (
       request.method === "OPTIONS"
     ) {
@@ -992,6 +1062,9 @@ export default {
       );
     }
 
+    /*
+     * Health check
+     */
     if (
       request.method === "GET"
     ) {
@@ -1015,6 +1088,11 @@ export default {
     }
 
     try {
+      /*
+       * تهيئة D1 قبل أي عملية تستخدم الجداول.
+       */
+      await ensureDatabase(env);
+
       const body =
         await request
           .clone()
@@ -1024,9 +1102,6 @@ export default {
         body?.action ||
         "chat";
 
-      /*
-       * بدء مهمة Gemini في الخلفية.
-       */
       if (
         action === "chat"
       ) {
@@ -1036,13 +1111,8 @@ export default {
         );
       }
 
-      /*
-       * الاستعلام عن Interaction
-       * حتى يكتمل.
-       */
       if (
-        action ===
-        "interaction_status"
+        action === "interaction_status"
       ) {
         return await handleInteractionStatus(
           request,
@@ -1051,8 +1121,7 @@ export default {
       }
 
       if (
-        action ===
-        "get_memories"
+        action === "get_memories"
       ) {
         return await getMemories(
           request,
@@ -1061,8 +1130,7 @@ export default {
       }
 
       if (
-        action ===
-        "delete_memory"
+        action === "delete_memory"
       ) {
         return await deleteMemory(
           request,
@@ -1077,11 +1145,16 @@ export default {
       }, 400);
 
     } catch (error) {
+      /*
+       * مهم:
+       * نعيد الخطأ عبر نفس CORS headers
+       * حتى لا يظهر للواجهة كـ Failed to fetch.
+       */
       return json({
         ok: false,
         error:
           error?.message ||
-          "حدث خطأ داخلي."
+          "حدث خطأ داخلي في Rafiq AI."
       }, 500);
     }
   }
