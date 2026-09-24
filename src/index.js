@@ -138,9 +138,15 @@ async function saveMemory(env, userId, memory) {
   const content = String(memory.content).slice(0, 2000);
 
   let importance = Number(memory.importance);
-  if (!Number.isFinite(importance)) importance = 3;
 
-  importance = Math.max(1, Math.min(5, Math.round(importance)));
+  if (!Number.isFinite(importance)) {
+    importance = 3;
+  }
+
+  importance = Math.max(
+    1,
+    Math.min(5, Math.round(importance))
+  );
 
   const existing = await env.DB.prepare(`
     SELECT id
@@ -159,7 +165,11 @@ async function saveMemory(env, userId, memory) {
         importance = ?,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
-    `).bind(category, importance, existing.id).run();
+    `).bind(
+      category,
+      importance,
+      existing.id
+    ).run();
 
     return existing.id;
   }
@@ -204,7 +214,11 @@ async function saveConversation(
         content
       )
       VALUES (?, ?, 'user', ?)
-    `).bind(conversationId, userId, userMessage),
+    `).bind(
+      conversationId,
+      userId,
+      userMessage
+    ),
 
     env.DB.prepare(`
       INSERT INTO messages (
@@ -214,7 +228,11 @@ async function saveConversation(
         content
       )
       VALUES (?, ?, 'assistant', ?)
-    `).bind(conversationId, userId, assistantReply),
+    `).bind(
+      conversationId,
+      userId,
+      assistantReply
+    ),
 
     env.DB.prepare(`
       UPDATE conversations
@@ -222,7 +240,10 @@ async function saveConversation(
         gemini_interaction_id = ?,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
-    `).bind(interactionId || null, conversationId)
+    `).bind(
+      interactionId || null,
+      conversationId
+    )
   ]);
 }
 
@@ -234,20 +255,31 @@ function extractModelText(geminiData) {
   for (let i = steps.length - 1; i >= 0; i--) {
     const step = steps[i];
 
-    if (step?.type !== "model_output") continue;
+    if (step?.type !== "model_output") {
+      continue;
+    }
 
     const content = Array.isArray(step.content)
       ? step.content
       : [];
 
     for (let j = content.length - 1; j >= 0; j--) {
-      if (content[j]?.type === "text" && typeof content[j].text === "string") {
-        return content[j].text;
+      const item = content[j];
+
+      if (
+        item?.type === "text" &&
+        typeof item.text === "string" &&
+        item.text.trim()
+      ) {
+        return item.text;
       }
     }
   }
 
-  if (typeof geminiData?.output_text === "string") {
+  if (
+    typeof geminiData?.output_text === "string" &&
+    geminiData.output_text.trim()
+  ) {
     return geminiData.output_text;
   }
 
@@ -270,6 +302,7 @@ function parseAssistantPayload(text) {
         typeof parsed.reply === "string"
           ? parsed.reply
           : text,
+
       memories:
         Array.isArray(parsed.memories)
           ? parsed.memories
@@ -319,7 +352,10 @@ async function handleChat(request, env) {
       : null;
 
   if (!conversationId) {
-    conversationId = await createConversation(env, userId);
+    conversationId = await createConversation(
+      env,
+      userId
+    );
   }
 
   const previousInteractionId =
@@ -328,8 +364,13 @@ async function handleChat(request, env) {
       ? body.previous_interaction_id.trim()
       : null;
 
-  const memories = await loadMemoryContext(env, userId);
-  const memoryContext = buildMemoryContext(memories);
+  const memories = await loadMemoryContext(
+    env,
+    userId
+  );
+
+  const memoryContext =
+    buildMemoryContext(memories);
 
   const input = `
 معلومات الذاكرة الحالية للمستخدم:
@@ -345,8 +386,12 @@ ${message}
 
   const requestBody = {
     model: "gemini-3.8-flash",
+
     input,
-    system_instruction: RAFIQ_SYSTEM_INSTRUCTION,
+
+    system_instruction:
+      RAFIQ_SYSTEM_INSTRUCTION,
+
     response_format: {
       type: "text",
       mime_type: "application/json",
@@ -355,28 +400,40 @@ ${message}
   };
 
   if (previousInteractionId) {
-    requestBody.previous_interaction_id = previousInteractionId;
+    requestBody.previous_interaction_id =
+      previousInteractionId;
   }
 
   const geminiResponse = await fetch(
     "https://generativelanguage.googleapis.com/v1/interactions",
     {
       method: "POST",
+
       headers: {
         "Content-Type": "application/json",
-        "x-goog-api-key": env.GEMINI_API_KEY
+        "x-goog-api-key": env.GEMINI_API_KEY,
+
+        /*
+         * Gemini Interactions API revision
+         * required for the May 2026 interaction schema.
+         */
+        "Api-Revision": "2026-05-20"
       },
+
       body: JSON.stringify(requestBody)
     }
   );
 
-  const geminiText = await geminiResponse.text();
+  const geminiText =
+    await geminiResponse.text();
 
   if (!geminiResponse.ok) {
-    let errorMessage = "حدث خطأ أثناء الاتصال بـGemini.";
+    let errorMessage =
+      "حدث خطأ أثناء الاتصال بـGemini.";
 
     try {
-      const errorData = JSON.parse(geminiText);
+      const errorData =
+        JSON.parse(geminiText);
 
       errorMessage =
         errorData?.error?.message ||
@@ -384,7 +441,8 @@ ${message}
         errorMessage;
     } catch {
       if (geminiText) {
-        errorMessage = geminiText.slice(0, 1000);
+        errorMessage =
+          geminiText.slice(0, 1000);
       }
     }
 
@@ -397,7 +455,8 @@ ${message}
   let geminiData;
 
   try {
-    geminiData = JSON.parse(geminiText);
+    geminiData =
+      JSON.parse(geminiText);
   } catch {
     return json({
       ok: false,
@@ -405,26 +464,76 @@ ${message}
     }, 502);
   }
 
-  const modelText = extractModelText(geminiData);
-  const parsed = parseAssistantPayload(modelText);
+  /*
+   * The Interactions API can expose an explicit
+   * interaction status.
+   *
+   * We expect a completed response for this
+   * synchronous request.
+   */
+  if (
+    geminiData?.status &&
+    geminiData.status !== "completed" &&
+    geminiData.status !== "incomplete"
+  ) {
+    return json({
+      ok: false,
+      error:
+        `حالة Gemini الحالية: ${geminiData.status}.`,
+      interaction_id:
+        geminiData.id || null
+    }, 502);
+  }
 
-  const assistantReply = parsed.reply;
+  const modelText =
+    extractModelText(geminiData);
+
+  if (!modelText) {
+    return json({
+      ok: false,
+      error:
+        "وصلت استجابة من Gemini، لكن لم يتم العثور على نص الرد.",
+      interaction_id:
+        geminiData.id || null,
+      status:
+        geminiData.status || null
+    }, 502);
+  }
+
+  const parsed =
+    parseAssistantPayload(modelText);
+
+  const assistantReply =
+    parsed.reply;
+
   const savedMemories = [];
 
   if (Array.isArray(parsed.memories)) {
-    for (const memory of parsed.memories.slice(0, 10)) {
+    for (
+      const memory of
+      parsed.memories.slice(0, 10)
+    ) {
       try {
-        const id = await saveMemory(env, userId, memory);
+        const id =
+          await saveMemory(
+            env,
+            userId,
+            memory
+          );
 
         if (id) {
           savedMemories.push({
             id,
-            category: memory.category,
-            content: memory.content
+            category:
+              memory.category,
+            content:
+              memory.content
           });
         }
       } catch {
-        // لا نفشل المحادثة إذا تعذر حفظ الذاكرة.
+        /*
+         * لا نفشل المحادثة إذا تعذر حفظ الذاكرة.
+         */
       }
     }
   }
@@ -441,16 +550,24 @@ ${message}
   return json({
     ok: true,
     reply: assistantReply,
-    interaction_id: geminiData.id || null,
-    conversation_id: conversationId,
-    saved_memories: savedMemories
+
+    interaction_id:
+      geminiData.id || null,
+
+    conversation_id:
+      conversationId,
+
+    saved_memories:
+      savedMemories
   });
 }
 
 async function getMemories(request, env) {
-  const body = await request.json();
+  const body =
+    await request.json();
 
-  const userId = String(body.user_id || "").trim();
+  const userId =
+    String(body.user_id || "").trim();
 
   if (!userId) {
     return json({
@@ -459,55 +576,77 @@ async function getMemories(request, env) {
     }, 400);
   }
 
-  await ensureUser(env, userId);
+  await ensureUser(
+    env,
+    userId
+  );
 
-  const result = await env.DB.prepare(`
-    SELECT
-      id,
-      category,
-      content,
-      importance,
-      confirmed,
-      created_at,
-      updated_at
-    FROM memories
-    WHERE user_id = ?
-      AND active = 1
-    ORDER BY importance DESC, updated_at DESC
-  `).bind(userId).all();
+  const result =
+    await env.DB.prepare(`
+      SELECT
+        id,
+        category,
+        content,
+        importance,
+        confirmed,
+        created_at,
+        updated_at
+      FROM memories
+      WHERE user_id = ?
+        AND active = 1
+      ORDER BY importance DESC, updated_at DESC
+    `)
+    .bind(userId)
+    .all();
 
   return json({
     ok: true,
-    memories: result.results || []
+    memories:
+      result.results || []
   });
 }
 
 async function deleteMemory(request, env) {
-  const body = await request.json();
+  const body =
+    await request.json();
 
-  const userId = String(body.user_id || "").trim();
-  const memoryId = Number(body.memory_id);
+  const userId =
+    String(body.user_id || "").trim();
 
-  if (!userId || !Number.isInteger(memoryId)) {
+  const memoryId =
+    Number(body.memory_id);
+
+  if (
+    !userId ||
+    !Number.isInteger(memoryId)
+  ) {
     return json({
       ok: false,
-      error: "user_id و memory_id مطلوبان."
+      error:
+        "user_id و memory_id مطلوبان."
     }, 400);
   }
 
-  const memory = await env.DB.prepare(`
-    SELECT id
-    FROM memories
-    WHERE id = ?
-      AND user_id = ?
-      AND active = 1
-    LIMIT 1
-  `).bind(memoryId, userId).first();
+  const memory =
+    await env.DB.prepare(`
+      SELECT id
+      FROM memories
+      WHERE id = ?
+        AND user_id = ?
+        AND active = 1
+      LIMIT 1
+    `)
+    .bind(
+      memoryId,
+      userId
+    )
+    .first();
 
   if (!memory) {
     return json({
       ok: false,
-      error: "الذاكرة غير موجودة."
+      error:
+        "الذاكرة غير موجودة."
     }, 404);
   }
 
@@ -519,7 +658,10 @@ async function deleteMemory(request, env) {
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
         AND user_id = ?
-    `).bind(memoryId, userId),
+    `).bind(
+      memoryId,
+      userId
+    ),
 
     env.DB.prepare(`
       INSERT INTO memory_actions (
@@ -528,8 +670,16 @@ async function deleteMemory(request, env) {
         action,
         details
       )
-      VALUES (?, ?, 'delete', 'Deleted by user')
-    `).bind(userId, memoryId)
+      VALUES (
+        ?,
+        ?,
+        'delete',
+        'Deleted by user'
+      )
+    `).bind(
+      userId,
+      memoryId
+    )
   ]);
 
   return json({
@@ -557,35 +707,51 @@ export default {
     if (request.method !== "POST") {
       return json({
         ok: false,
-        error: "Method not allowed."
+        error:
+          "Method not allowed."
       }, 405);
     }
 
     try {
-      const body = await request.clone().json();
-      const action = body?.action || "chat";
+      const body =
+        await request.clone().json();
+
+      const action =
+        body?.action || "chat";
 
       if (action === "chat") {
-        return await handleChat(request, env);
+        return await handleChat(
+          request,
+          env
+        );
       }
 
       if (action === "get_memories") {
-        return await getMemories(request, env);
+        return await getMemories(
+          request,
+          env
+        );
       }
 
       if (action === "delete_memory") {
-        return await deleteMemory(request, env);
+        return await deleteMemory(
+          request,
+          env
+        );
       }
 
       return json({
         ok: false,
-        error: "إجراء غير معروف."
+        error:
+          "إجراء غير معروف."
       }, 400);
 
     } catch (error) {
       return json({
         ok: false,
-        error: error?.message || "حدث خطأ داخلي."
+        error:
+          error?.message ||
+          "حدث خطأ داخلي."
       }, 500);
     }
   }
