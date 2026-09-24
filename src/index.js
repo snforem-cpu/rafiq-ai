@@ -5,25 +5,8 @@ const CORS_HEADERS = {
   "Access-Control-Max-Age": "86400"
 };
 
-const GEMINI_API_URL =
-  "https://generativelanguage.googleapis.com/v1/interactions";
-
-const GEMINI_MODEL = "gemini-3.8-flash";
-
-/*
- * رفيق محادثة يومية.
- *
- * Gemini 3.8 Flash يستخدم medium افتراضيًا.
- * نستخدم low هنا لتقليل زمن الاستجابة للمحادثة العادية.
- * النموذج ما زال يستخدم التفكير، لكن بمستوى مناسب للدردشة.
- */
-const GEMINI_THINKING_LEVEL = "low";
-
-/*
- * لا نترك طلب Gemini معلقًا بلا نهاية.
- * هذا ليس حد Cloudflare؛ هو حد أمان خاص بطلبنا.
- */
-const GEMINI_TIMEOUT_MS = 45000;
+const GEMINI_BASE =
+  "https://generativelanguage.googleapis.com/v1beta/interactions";
 
 const RAFIQ_SYSTEM_INSTRUCTION = `
 أنت "رفيق AI"، مساعد شخصي بالذكاء الاصطناعي.
@@ -44,14 +27,10 @@ const RAFIQ_SYSTEM_INSTRUCTION = `
 - إذا طلب المستخدم حفظ معلومة شخصية مفيدة للمحادثات المستقبلية، اقترح حفظها ضمن الذاكرة.
 - لا تحفظ كل شيء تلقائيًا؛ احفظ المعلومات المستقرة والمفيدة مستقبلًا فقط.
 
-مهم جدًا:
-- يجب أن يكون الإخراج JSON فقط.
-- لا تضع Markdown خارج JSON.
-- لا تضع أي شرح قبل JSON أو بعده.
-- حقل reply هو الرد النهائي الذي سيظهر للمستخدم.
-- حقل memories يحتوي فقط على معلومات جديدة ومستقرة ومفيدة مستقبلًا.
-- لا تضف السؤال الحالي إلى memories.
-- لا تضف معلومات مؤقتة أو عابرة إلى memories.
+مهم:
+أعد JSON فقط وفق المخطط المطلوب.
+حقل reply يحتوي الرد الذي سيظهر للمستخدم.
+حقل memories يحتوي فقط على معلومات جديدة ومستقرة ومفيدة مستقبلًا.
 `;
 
 const MEMORY_RESPONSE_SCHEMA = {
@@ -109,39 +88,6 @@ function newId() {
   return crypto.randomUUID();
 }
 
-function sleep(ms) {
-  return new Promise(resolve =>
-    setTimeout(resolve, ms)
-  );
-}
-
-async function fetchWithTimeout(
-  url,
-  options,
-  timeoutMs = GEMINI_TIMEOUT_MS
-) {
-  const controller =
-    new AbortController();
-
-  const timeout =
-    setTimeout(
-      () => controller.abort(),
-      timeoutMs
-    );
-
-  try {
-    return await fetch(
-      url,
-      {
-        ...options,
-        signal: controller.signal
-      }
-    );
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 async function ensureUser(env, userId) {
   if (!userId) return;
 
@@ -155,10 +101,7 @@ async function ensureUser(env, userId) {
     .run();
 }
 
-async function createConversation(
-  env,
-  userId
-) {
+async function createConversation(env, userId) {
   const conversationId = newId();
 
   await env.DB.prepare(`
@@ -168,12 +111,7 @@ async function createConversation(
       created_at,
       updated_at
     )
-    VALUES (
-      ?,
-      ?,
-      CURRENT_TIMESTAMP,
-      CURRENT_TIMESTAMP
-    )
+    VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
   `)
     .bind(
       conversationId,
@@ -184,30 +122,24 @@ async function createConversation(
   return conversationId;
 }
 
-async function loadMemoryContext(
-  env,
-  userId
-) {
+async function loadMemoryContext(env, userId) {
   if (!userId) return [];
 
-  const result =
-    await env.DB.prepare(`
-      SELECT
-        id,
-        category,
-        content,
-        importance,
-        confirmed
-      FROM memories
-      WHERE user_id = ?
-        AND active = 1
-      ORDER BY
-        importance DESC,
-        updated_at DESC
-      LIMIT 100
-    `)
-      .bind(userId)
-      .all();
+  const result = await env.DB.prepare(`
+    SELECT
+      id,
+      category,
+      content,
+      importance,
+      confirmed
+    FROM memories
+    WHERE user_id = ?
+      AND active = 1
+    ORDER BY importance DESC, updated_at DESC
+    LIMIT 100
+  `)
+    .bind(userId)
+    .all();
 
   return result.results || [];
 }
@@ -219,37 +151,23 @@ function buildMemoryContext(memories) {
 
   return memories
     .map((memory, index) => {
-      return (
-        `${index + 1}. ` +
-        `[${memory.category}] ` +
-        `${memory.content}`
-      );
+      return `${index + 1}. [${memory.category}] ${memory.content}`;
     })
     .join("\n");
 }
 
-async function saveMemory(
-  env,
-  userId,
-  memory
-) {
-  if (
-    !userId ||
-    !memory ||
-    !memory.content
-  ) {
+async function saveMemory(env, userId, memory) {
+  if (!userId || !memory?.content) {
     return null;
   }
 
   const category =
-    String(
-      memory.category || "general"
-    ).slice(0, 100);
+    String(memory.category || "general")
+      .slice(0, 100);
 
   const content =
-    String(
-      memory.content
-    ).slice(0, 2000);
+    String(memory.content)
+      .slice(0, 2000);
 
   let importance =
     Number(memory.importance);
@@ -329,10 +247,7 @@ async function saveMemory(
       )
       .run();
 
-  return (
-    result.meta?.last_row_id ||
-    null
-  );
+  return result.meta?.last_row_id || null;
 }
 
 async function saveConversation(
@@ -343,10 +258,7 @@ async function saveConversation(
   assistantReply,
   interactionId
 ) {
-  if (
-    !conversationId ||
-    !userId
-  ) {
+  if (!conversationId || !userId) {
     return;
   }
 
@@ -358,17 +270,13 @@ async function saveConversation(
         role,
         content
       )
-      VALUES (
-        ?,
-        ?,
-        'user',
-        ?
-      )
-    `).bind(
-      conversationId,
-      userId,
-      userMessage
-    ),
+      VALUES (?, ?, 'user', ?)
+    `)
+      .bind(
+        conversationId,
+        userId,
+        userMessage
+      ),
 
     env.DB.prepare(`
       INSERT INTO messages (
@@ -377,17 +285,13 @@ async function saveConversation(
         role,
         content
       )
-      VALUES (
-        ?,
-        ?,
-        'assistant',
-        ?
-      )
-    `).bind(
-      conversationId,
-      userId,
-      assistantReply
-    ),
+      VALUES (?, ?, 'assistant', ?)
+    `)
+      .bind(
+        conversationId,
+        userId,
+        assistantReply
+      ),
 
     env.DB.prepare(`
       UPDATE conversations
@@ -395,37 +299,24 @@ async function saveConversation(
         gemini_interaction_id = ?,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
-    `).bind(
-      interactionId || null,
-      conversationId
-    )
+    `)
+      .bind(
+        interactionId || null,
+        conversationId
+      )
   ]);
 }
 
-/*
- * استخراج النص من مخطط Interactions الجديد.
- *
- * Google تستخدم:
- * steps[]
- *   -> model_output
- *      -> content[]
- *         -> text
- */
-function extractModelText(
-  geminiData
-) {
+function extractModelText(geminiData) {
   if (
-    typeof geminiData?.output_text ===
-    "string" &&
+    typeof geminiData?.output_text === "string" &&
     geminiData.output_text.trim()
   ) {
-    return geminiData.output_text.trim();
+    return geminiData.output_text;
   }
 
   const steps =
-    Array.isArray(
-      geminiData?.steps
-    )
+    Array.isArray(geminiData?.steps)
       ? geminiData.steps
       : [];
 
@@ -436,17 +327,12 @@ function extractModelText(
   ) {
     const step = steps[i];
 
-    if (
-      step?.type !==
-      "model_output"
-    ) {
+    if (step?.type !== "model_output") {
       continue;
     }
 
     const content =
-      Array.isArray(
-        step.content
-      )
+      Array.isArray(step.content)
         ? step.content
         : [];
 
@@ -455,15 +341,14 @@ function extractModelText(
       j >= 0;
       j--
     ) {
-      const item =
-        content[j];
+      const item = content[j];
 
       if (
         item?.type === "text" &&
         typeof item.text === "string" &&
         item.text.trim()
       ) {
-        return item.text.trim();
+        return item.text;
       }
     }
   }
@@ -480,140 +365,144 @@ function parseAssistantPayload(text) {
     };
   }
 
-  /*
-   * أحيانًا قد يعيد النموذج JSON داخل
-   * code fence رغم تعليماته.
-   * ننظفه قبل JSON.parse.
-   */
-  let cleanText =
-    String(text).trim();
-
-  if (
-    cleanText.startsWith("```")
-  ) {
-    cleanText =
-      cleanText
-        .replace(
-          /^```(?:json)?\s*/i,
-          ""
-        )
-        .replace(
-          /\s*```$/,
-          ""
-        )
-        .trim();
-  }
-
   try {
     const parsed =
-      JSON.parse(cleanText);
+      JSON.parse(text);
 
     return {
       reply:
-        typeof parsed.reply ===
-        "string"
+        typeof parsed.reply === "string"
           ? parsed.reply
-          : cleanText,
+          : text,
 
       memories:
-        Array.isArray(
-          parsed.memories
-        )
+        Array.isArray(parsed.memories)
           ? parsed.memories
           : []
     };
   } catch {
-    /*
-     * إذا وصل نص عادي بدل JSON،
-     * لا نفشل المحادثة.
-     */
     return {
-      reply: cleanText,
+      reply: text,
       memories: []
     };
   }
 }
 
-async function parseGeminiError(
-  response
+async function geminiRequest(
+  env,
+  path = "",
+  options = {}
 ) {
+  const response =
+    await fetch(
+      `${GEMINI_BASE}${path}`,
+      {
+        ...options,
+
+        headers: {
+          "Content-Type":
+            "application/json",
+
+          "x-goog-api-key":
+            env.GEMINI_API_KEY,
+
+          "Api-Revision":
+            "2026-05-20",
+
+          ...(options.headers || {})
+        }
+      }
+    );
+
   const text =
     await response.text();
 
-  let message =
-    "حدث خطأ أثناء الاتصال بـGemini.";
+  let data = null;
 
   try {
-    const data =
-      JSON.parse(text);
-
-    message =
-      data?.error?.message ||
-      data?.message ||
-      message;
+    data = text
+      ? JSON.parse(text)
+      : null;
   } catch {
-    if (text) {
-      message =
-        text.slice(0, 1500);
-    }
+    data = null;
   }
 
   return {
-    message,
-    raw: text
+    response,
+    text,
+    data
   };
 }
 
-async function createGeminiInteraction(
+/*
+ * إنشاء Interaction في الخلفية.
+ *
+ * لا ننتظر Gemini هنا.
+ * هذا هو الجزء الذي يمنع بقاء طلب المتصفح
+ * عالقًا أثناء تفكير النموذج.
+ */
+async function createBackgroundInteraction(
   env,
-  requestBody
+  input,
+  previousInteractionId
 ) {
-  try {
-    const response =
-      await fetchWithTimeout(
-        GEMINI_API_URL,
-        {
-          method: "POST",
+  const requestBody = {
+    model: "gemini-3.8-flash",
 
-          headers: {
-            "Content-Type":
-              "application/json",
+    input,
 
-            "x-goog-api-key":
-              env.GEMINI_API_KEY,
+    background: true,
 
-            /*
-             * Google Interactions API
-             * new schema revision.
-             */
-            "Api-Revision":
-              "2026-05-20"
-          },
+    store: true,
 
-          body:
-            JSON.stringify(
-              requestBody
-            )
-        }
-      );
+    system_instruction:
+      RAFIQ_SYSTEM_INSTRUCTION,
 
-    return response;
-
-  } catch (error) {
-    if (
-      error?.name ===
-      "AbortError"
-    ) {
-      throw new Error(
-        "انتهت مهلة الاتصال بـGemini قبل وصول الرد."
-      );
+    response_format: {
+      type: "text",
+      mime_type: "application/json",
+      schema:
+        MEMORY_RESPONSE_SCHEMA
     }
+  };
 
-    throw error;
+  if (previousInteractionId) {
+    requestBody.previous_interaction_id =
+      previousInteractionId;
   }
+
+  return await geminiRequest(
+    env,
+    "",
+    {
+      method: "POST",
+      body:
+        JSON.stringify(requestBody)
+    }
+  );
 }
 
-async function handleChat(
+/*
+ * جلب حالة Interaction.
+ */
+async function getInteraction(
+  env,
+  interactionId
+) {
+  return await geminiRequest(
+    env,
+    `/${encodeURIComponent(interactionId)}`,
+    {
+      method: "GET",
+      headers: {
+        "Content-Type":
+          "application/json"
+      }
+    }
+  );
+}
+
+async function handleChatStart(
   request,
   env
 ) {
@@ -633,16 +522,14 @@ async function handleChat(
   if (!userId) {
     return json({
       ok: false,
-      error:
-        "user_id مطلوب."
+      error: "user_id مطلوب."
     }, 400);
   }
 
   if (!message) {
     return json({
       ok: false,
-      error:
-        "الرسالة فارغة."
+      error: "الرسالة فارغة."
     }, 400);
   }
 
@@ -659,10 +546,6 @@ async function handleChat(
     userId
   );
 
-  /*
-   * نستخدم conversation_id الموجود
-   * من الواجهة، وإذا لم يوجد ننشئ واحدًا.
-   */
   let conversationId =
     typeof body.conversation_id ===
       "string" &&
@@ -678,12 +561,6 @@ async function handleChat(
       );
   }
 
-  /*
-   * previous_interaction_id اختياري.
-   *
-   * إذا كان موجودًا نرسله إلى Gemini
-   * حتى يحافظ على سياق المحادثة.
-   */
   const previousInteractionId =
     typeof body.previous_interaction_id ===
       "string" &&
@@ -698,9 +575,7 @@ async function handleChat(
     );
 
   const memoryContext =
-    buildMemoryContext(
-      memories
-    );
+    buildMemoryContext(memories);
 
   const input = `
 معلومات الذاكرة الحالية للمستخدم:
@@ -711,165 +586,184 @@ ${message}
 
 أجب باللغة المناسبة للغة المستخدم.
 
-إذا كانت هناك معلومة جديدة مستقرة ومفيدة مستقبلًا، أضفها إلى memories.
+إذا كانت هناك معلومة جديدة مستقرة ومفيدة مستقبلًا،
+أضفها إلى memories.
 
-لا تضف إلى memories:
-- محتوى السؤال نفسه.
-- معلومات مؤقتة.
-- معلومات لم يقلها المستخدم.
-- تخمينات عن المستخدم.
-
-إذا لم توجد ذاكرة جديدة، أعد memories كمصفوفة فارغة.
+لا تضف إلى memories مجرد محتوى السؤال
+أو معلومات مؤقتة.
 `;
 
-  /*
-   * الطلب النهائي إلى Gemini.
-   *
-   * thinking_level = low
-   * لتجنب زمن التفكير الطويل في المحادثة العادية.
-   */
-  const requestBody = {
-    model:
-      GEMINI_MODEL,
+  const result =
+    await createBackgroundInteraction(
+      env,
+      input,
+      previousInteractionId
+    );
 
-    input,
+  if (!result.response.ok) {
+    let errorMessage =
+      "حدث خطأ أثناء إنشاء مهمة Gemini.";
 
-    system_instruction:
-      RAFIQ_SYSTEM_INSTRUCTION,
-
-    generation_config: {
-      thinking_level:
-        GEMINI_THINKING_LEVEL
-    },
-
-    response_format: {
-      type: "text",
-      mime_type:
-        "application/json",
-      schema:
-        MEMORY_RESPONSE_SCHEMA
-    },
-
-    /*
-     * نحتاج تخزين Interaction
-     * لأننا نستخدم previous_interaction_id.
-     */
-    store: true
-  };
-
-  if (previousInteractionId) {
-    requestBody.previous_interaction_id =
-      previousInteractionId;
-  }
-
-  let geminiResponse;
-
-  try {
-    geminiResponse =
-      await createGeminiInteraction(
-        env,
-        requestBody
-      );
-  } catch (error) {
-    return json({
-      ok: false,
-      error:
-        error?.message ||
-        "تعذر الاتصال بخدمة Gemini."
-    }, 504);
-  }
-
-  /*
-   * إذا رفض Gemini الطلب،
-   * نعيد الخطأ الحقيقي بدل إبقاء الواجهة
-   * في حالة "جاري التفكير".
-   */
-  if (!geminiResponse.ok) {
-    const error =
-      await parseGeminiError(
-        geminiResponse
-      );
-
-    /*
-     * إذا كانت المشكلة في Interaction قديمة
-     * محفوظة في المتصفح، نوضح ذلك.
-     */
-    return json({
-      ok: false,
-      error:
-        error.message,
-      gemini_status:
-        geminiResponse.status
-    }, geminiResponse.status);
-  }
-
-  let geminiData;
-
-  try {
-    geminiData =
-      await geminiResponse.json();
-  } catch {
-    return json({
-      ok: false,
-      error:
-        "وصل رد من Gemini لكنه ليس JSON صالحًا."
-    }, 502);
-  }
-
-  /*
-   * Interactions API يعيد status.
-   *
-   * في الطلب المتزامن الطبيعي نحتاج completed.
-   */
-  const interactionStatus =
-    geminiData?.status ||
-    null;
-
-  if (
-    interactionStatus &&
-    interactionStatus !==
-      "completed"
-  ) {
-    if (
-      interactionStatus ===
-      "in_progress"
-    ) {
-      return json({
-        ok: false,
-        error:
-          "Gemini ما زال يعالج الطلب. أعد إرسال الرسالة بعد لحظة.",
-        interaction_id:
-          geminiData.id || null,
-        status:
-          interactionStatus
-      }, 504);
+    if (result.data?.error?.message) {
+      errorMessage =
+        result.data.error.message;
+    } else if (result.text) {
+      errorMessage =
+        result.text.slice(0, 1000);
     }
 
     return json({
       ok: false,
+      error: errorMessage
+    }, result.response.status);
+  }
+
+  const interaction =
+    result.data;
+
+  if (!interaction?.id) {
+    return json({
+      ok: false,
       error:
-        `انتهت عملية Gemini بحالة: ${interactionStatus}.`,
+        "لم يعُد Gemini بمعرّف Interaction."
+    }, 502);
+  }
+
+  return json({
+    ok: true,
+
+    pending: true,
+
+    interaction_id:
+      interaction.id,
+
+    conversation_id:
+      conversationId,
+
+    status:
+      interaction.status ||
+      "in_progress"
+  });
+}
+
+/*
+ * إنهاء Interaction بعد أن يصبح completed.
+ *
+ * هذه العملية تحفظ الرد والذاكرة في D1.
+ */
+async function handleInteractionStatus(
+  request,
+  env
+) {
+  const body =
+    await request.json();
+
+  const userId =
+    String(
+      body.user_id || ""
+    ).trim();
+
+  const interactionId =
+    String(
+      body.interaction_id || ""
+    ).trim();
+
+  const conversationId =
+    String(
+      body.conversation_id || ""
+    ).trim();
+
+  const userMessage =
+    String(
+      body.message || ""
+    ).trim();
+
+  if (!userId) {
+    return json({
+      ok: false,
+      error: "user_id مطلوب."
+    }, 400);
+  }
+
+  if (!interactionId) {
+    return json({
+      ok: false,
+      error:
+        "interaction_id مطلوب."
+    }, 400);
+  }
+
+  const result =
+    await getInteraction(
+      env,
+      interactionId
+    );
+
+  if (!result.response.ok) {
+    let errorMessage =
+      "تعذر الحصول على حالة Gemini.";
+
+    if (result.data?.error?.message) {
+      errorMessage =
+        result.data.error.message;
+    } else if (result.text) {
+      errorMessage =
+        result.text.slice(0, 1000);
+    }
+
+    return json({
+      ok: false,
+      error: errorMessage
+    }, result.response.status);
+  }
+
+  const interaction =
+    result.data || {};
+
+  const status =
+    interaction.status ||
+    "unknown";
+
+  if (status === "in_progress") {
+    return json({
+      ok: true,
+      pending: true,
+      status,
       interaction_id:
-        geminiData.id || null,
-      status:
-        interactionStatus
+        interactionId
+    });
+  }
+
+  if (
+    status !== "completed" &&
+    status !== "incomplete"
+  ) {
+    return json({
+      ok: false,
+      pending: false,
+      status,
+      interaction_id:
+        interactionId,
+      error:
+        interaction?.error?.message ||
+        `انتهت مهمة Gemini بحالة: ${status}.`
     }, 502);
   }
 
   const modelText =
     extractModelText(
-      geminiData
+      interaction
     );
 
   if (!modelText) {
     return json({
       ok: false,
-      error:
-        "وصلت استجابة من Gemini، لكن لم يتم العثور على نص الرد.",
+      pending: false,
+      status,
       interaction_id:
-        geminiData.id || null,
-      status:
-        interactionStatus
+        interactionId,
+      error:
+        "اكتملت مهمة Gemini لكن لم يتم العثور على نص الرد."
     }, 502);
   }
 
@@ -883,21 +777,12 @@ ${message}
 
   const savedMemories = [];
 
-  /*
-   * حفظ الذاكرة لا يجب أن يمنع
-   * ظهور رد رفيق للمستخدم.
-   */
   if (
-    Array.isArray(
-      parsed.memories
-    )
+    Array.isArray(parsed.memories)
   ) {
     for (
       const memory of
-      parsed.memories.slice(
-        0,
-        10
-      )
+      parsed.memories.slice(0, 10)
     ) {
       try {
         const id =
@@ -917,44 +802,32 @@ ${message}
           });
         }
       } catch {
-        /*
-         * نتجاهل خطأ الذاكرة
-         * ولا نفشل المحادثة.
-         */
+        // لا نفشل الرد بسبب فشل حفظ ذاكرة.
       }
     }
   }
 
-  /*
-   * حفظ المحادثة في D1.
-   */
-  try {
+  if (conversationId) {
     await saveConversation(
       env,
       userId,
       conversationId,
-      message,
+      userMessage,
       assistantReply,
-      geminiData.id || null
-    );
-  } catch (error) {
-    /*
-     * الرد نفسه أهم من فشل الحفظ.
-     */
-    console.error(
-      "D1 saveConversation error:",
-      error
+      interactionId
     );
   }
 
   return json({
     ok: true,
+    pending: false,
+    status,
 
     reply:
       assistantReply,
 
     interaction_id:
-      geminiData.id || null,
+      interactionId,
 
     conversation_id:
       conversationId,
@@ -1029,15 +902,11 @@ async function deleteMemory(
     ).trim();
 
   const memoryId =
-    Number(
-      body.memory_id
-    );
+    Number(body.memory_id);
 
   if (
     !userId ||
-    !Number.isInteger(
-      memoryId
-    )
+    !Number.isInteger(memoryId)
   ) {
     return json({
       ok: false,
@@ -1074,14 +943,14 @@ async function deleteMemory(
       UPDATE memories
       SET
         active = 0,
-        updated_at =
-          CURRENT_TIMESTAMP
+        updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
         AND user_id = ?
-    `).bind(
-      memoryId,
-      userId
-    ),
+    `)
+      .bind(
+        memoryId,
+        userId
+      ),
 
     env.DB.prepare(`
       INSERT INTO memory_actions (
@@ -1096,10 +965,11 @@ async function deleteMemory(
         'delete',
         'Deleted by user'
       )
-    `).bind(
-      userId,
-      memoryId
-    )
+    `)
+      .bind(
+        userId,
+        memoryId
+      )
   ]);
 
   return json({
@@ -1108,16 +978,9 @@ async function deleteMemory(
 }
 
 export default {
-  async fetch(
-    request,
-    env
-  ) {
-    /*
-     * CORS preflight
-     */
+  async fetch(request, env) {
     if (
-      request.method ===
-      "OPTIONS"
+      request.method === "OPTIONS"
     ) {
       return new Response(
         null,
@@ -1129,12 +992,8 @@ export default {
       );
     }
 
-    /*
-     * Health check
-     */
     if (
-      request.method ===
-      "GET"
+      request.method === "GET"
     ) {
       return json({
         ok: true,
@@ -1146,8 +1005,7 @@ export default {
     }
 
     if (
-      request.method !==
-      "POST"
+      request.method !== "POST"
     ) {
       return json({
         ok: false,
@@ -1157,10 +1015,6 @@ export default {
     }
 
     try {
-      /*
-       * نقرأ نسخة من body لتحديد action
-       * بدون استهلاك body الأصلي.
-       */
       const body =
         await request
           .clone()
@@ -1170,11 +1024,27 @@ export default {
         body?.action ||
         "chat";
 
+      /*
+       * بدء مهمة Gemini في الخلفية.
+       */
+      if (
+        action === "chat"
+      ) {
+        return await handleChatStart(
+          request,
+          env
+        );
+      }
+
+      /*
+       * الاستعلام عن Interaction
+       * حتى يكتمل.
+       */
       if (
         action ===
-        "chat"
+        "interaction_status"
       ) {
-        return await handleChat(
+        return await handleInteractionStatus(
           request,
           env
         );
@@ -1207,16 +1077,11 @@ export default {
       }, 400);
 
     } catch (error) {
-      console.error(
-        "Rafiq Worker error:",
-        error
-      );
-
       return json({
         ok: false,
         error:
           error?.message ||
-          "حدث خطأ داخلي في رفيق."
+          "حدث خطأ داخلي."
       }, 500);
     }
   }
