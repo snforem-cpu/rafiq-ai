@@ -769,23 +769,19 @@
     /*
      * رفيق AI
      *
-     * هذا الإصدار يستخدم:
-     *
-     * GitHub Pages
+     * Cloudflare Pages
+     *      ↓
+     * Pages Function /api/chat
+     *      ↓
+     * Service Binding RAFIQ_BACKEND
      *      ↓
      * Cloudflare Worker
      *      ↓
      * Gemini generateContent
-     *      ↓
-     * الرد المباشر
-     *
-     * لا يوجد Interaction.
-     * لا يوجد Background.
-     * لا يوجد Polling.
      */
 
     const WORKER_URL =
-      "https://rafiq-ai.snforem.workers.dev/";
+      "/api/chat";
 
 
     /* =========================
@@ -1135,14 +1131,6 @@
 
       try {
 
-        /*
-         * طلب واحد فقط.
-         *
-         * لا polling.
-         * لا interaction.
-         * لا انتظار لمهمة منفصلة.
-         */
-
         const response =
           await fetch(
             WORKER_URL,
@@ -1226,12 +1214,6 @@
           "Rafiq connection error:",
           error
         );
-
-        /*
-         * مهم:
-         * إذا كان Worker قد أعاد رسالة خطأ،
-         * نعرضها للمستخدم بدل Failed to fetch.
-         */
 
         loadingContent.textContent =
           error?.message ||
