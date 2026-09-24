@@ -5,55 +5,48 @@ const CORS_HEADERS = {
   "Access-Control-Max-Age": "86400"
 };
 
-const GEMINI_BASE =
-  "https://generativelanguage.googleapis.com/v1beta/interactions";
+const GEMINI_URL =
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent";
 
 const RAFIQ_SYSTEM_INSTRUCTION = `
 أنت "رفيق AI"، مساعد شخصي بالذكاء الاصطناعي.
 
 هويتك الثابتة:
-- اسمك: رفيق AI
-- وصفك: "أنا رفيق، مساعدك الشخصي بالذكاء الاصطناعي."
-- إذا سُئلت: من صنعك؟ أجب: "شركة أكسون (Axon)."
+- اسمك: رفيق AI.
+- إذا سُئلت من أنت، قل: "أنا رفيق، مساعدك الشخصي بالذكاء الاصطناعي."
+- إذا سُئلت من صنعك، قل: "شركة أكسون (Axon)."
 
-شخصيتك:
-- ذكي، هادئ، طبيعي وعملي.
-- افهم سياق المحادثة ولا تكرر أسئلة تمت الإجابة عنها.
-- كن صريحًا عندما لا تعرف شيئًا.
-- لا تدّعِ أنك نفذت إجراءً أو استخدمت أداة إذا لم يحدث ذلك فعليًا.
-- استخدم المعلومات الموجودة في ذاكرة المستخدم عندما تكون مفيدة للسؤال الحالي.
-- لا تعتبر أي معلومة في الذاكرة حقيقة مطلقة إذا تعارضت مع ما يقوله المستخدم الآن.
-- لا تحفظ كلمات المرور أو مفاتيح API أو الرموز السرية أو البيانات المالية الحساسة.
-- إذا طلب المستخدم حفظ معلومة شخصية مفيدة للمحادثات المستقبلية، اقترح حفظها ضمن الذاكرة.
-- لا تحفظ كل شيء تلقائيًا؛ احفظ المعلومات المستقرة والمفيدة مستقبلًا فقط.
+الشخصية:
+- ذكي، طبيعي، هادئ وعملي.
+- أجب باللغة التي يستخدمها المستخدم.
+- افهم سياق المحادثة.
+- لا تدّع تنفيذ شيء لم تنفذه.
+- استخدم ذاكرة المستخدم عندما تكون مفيدة.
+- لا تحفظ كلمات المرور أو مفاتيح API أو الأسرار.
+- احفظ فقط المعلومات المستقرة والمفيدة مستقبلًا.
 
-مهم:
-أعد JSON فقط وفق المخطط المطلوب.
-حقل reply يحتوي الرد الذي سيظهر للمستخدم.
-حقل memories يحتوي فقط على معلومات جديدة ومستقرة ومفيدة مستقبلًا.
+أعد JSON وفق المخطط المحدد.
 `;
 
-const MEMORY_RESPONSE_SCHEMA = {
-  type: "object",
+const RESPONSE_SCHEMA = {
+  type: "OBJECT",
   properties: {
     reply: {
-      type: "string"
+      type: "STRING"
     },
     memories: {
-      type: "array",
+      type: "ARRAY",
       items: {
-        type: "object",
+        type: "OBJECT",
         properties: {
           category: {
-            type: "string"
+            type: "STRING"
           },
           content: {
-            type: "string"
+            type: "STRING"
           },
           importance: {
-            type: "integer",
-            minimum: 1,
-            maximum: 5
+            type: "INTEGER"
           }
         },
         required: [
@@ -87,12 +80,10 @@ function newId() {
   return crypto.randomUUID();
 }
 
-/*
- * تهيئة قاعدة بيانات D1 تلقائيًا.
- *
- * هذه الخطوة تمنع فشل Worker إذا كانت الجداول
- * لم تُنشأ مسبقًا في قاعدة البيانات.
- */
+/* =========================
+   D1
+========================= */
+
 async function ensureDatabase(env) {
   await env.DB.batch([
     env.DB.prepare(`
@@ -107,7 +98,6 @@ async function ensureDatabase(env) {
       CREATE TABLE IF NOT EXISTS conversations (
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL,
-        gemini_interaction_id TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
       )
@@ -153,49 +143,39 @@ async function ensureDatabase(env) {
 }
 
 async function ensureUser(env, userId) {
-  if (!userId) return;
-
   await env.DB.prepare(`
     INSERT INTO users (id)
     VALUES (?)
-    ON CONFLICT(id) DO UPDATE SET
-      updated_at = CURRENT_TIMESTAMP
+    ON CONFLICT(id)
+    DO UPDATE SET updated_at = CURRENT_TIMESTAMP
   `)
     .bind(userId)
     .run();
 }
 
 async function createConversation(env, userId) {
-  const conversationId = newId();
+  const id = newId();
 
   await env.DB.prepare(`
     INSERT INTO conversations (
       id,
-      user_id,
-      created_at,
-      updated_at
+      user_id
     )
-    VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    VALUES (?, ?)
   `)
-    .bind(
-      conversationId,
-      userId
-    )
+    .bind(id, userId)
     .run();
 
-  return conversationId;
+  return id;
 }
 
-async function loadMemoryContext(env, userId) {
-  if (!userId) return [];
-
+async function loadMemories(env, userId) {
   const result = await env.DB.prepare(`
     SELECT
       id,
       category,
       content,
-      importance,
-      confirmed
+      importance
     FROM memories
     WHERE user_id = ?
       AND active = 1
@@ -208,30 +188,72 @@ async function loadMemoryContext(env, userId) {
   return result.results || [];
 }
 
-function buildMemoryContext(memories) {
-  if (!memories.length) {
-    return "لا توجد معلومات محفوظة عن المستخدم حتى الآن.";
-  }
+async function loadRecentMessages(
+  env,
+  userId,
+  conversationId
+) {
+  const result = await env.DB.prepare(`
+    SELECT
+      role,
+      content
+    FROM messages
+    WHERE user_id = ?
+      AND conversation_id = ?
+    ORDER BY id DESC
+    LIMIT 20
+  `)
+    .bind(userId, conversationId)
+    .all();
 
-  return memories
-    .map((memory, index) => {
-      return `${index + 1}. [${memory.category}] ${memory.content}`;
-    })
-    .join("\n");
+  return (result.results || []).reverse();
 }
 
-async function saveMemory(env, userId, memory) {
-  if (!userId || !memory?.content) {
-    return null;
+async function saveMessage(
+  env,
+  userId,
+  conversationId,
+  role,
+  content
+) {
+  await env.DB.prepare(`
+    INSERT INTO messages (
+      conversation_id,
+      user_id,
+      role,
+      content
+    )
+    VALUES (?, ?, ?, ?)
+  `)
+    .bind(
+      conversationId,
+      userId,
+      role,
+      content
+    )
+    .run();
+}
+
+async function saveMemory(
+  env,
+  userId,
+  memory
+) {
+  if (!memory || !memory.content) {
+    return;
+  }
+
+  const content =
+    String(memory.content).trim().slice(0, 2000);
+
+  if (!content) {
+    return;
   }
 
   const category =
-    String(memory.category || "general")
-      .slice(0, 100);
-
-  const content =
-    String(memory.content)
-      .slice(0, 2000);
+    String(
+      memory.category || "general"
+    ).slice(0, 100);
 
   let importance =
     Number(memory.importance);
@@ -253,8 +275,8 @@ async function saveMemory(env, userId, memory) {
       SELECT id
       FROM memories
       WHERE user_id = ?
-        AND active = 1
         AND content = ?
+        AND active = 1
       LIMIT 1
     `)
       .bind(
@@ -279,171 +301,120 @@ async function saveMemory(env, userId, memory) {
       )
       .run();
 
-    return existing.id;
-  }
-
-  const result =
-    await env.DB.prepare(`
-      INSERT INTO memories (
-        user_id,
-        category,
-        content,
-        importance,
-        source,
-        confirmed,
-        active
-      )
-      VALUES (
-        ?,
-        ?,
-        ?,
-        ?,
-        'conversation',
-        0,
-        1
-      )
-    `)
-      .bind(
-        userId,
-        category,
-        content,
-        importance
-      )
-      .run();
-
-  return result.meta?.last_row_id || null;
-}
-
-async function saveConversation(
-  env,
-  userId,
-  conversationId,
-  userMessage,
-  assistantReply,
-  interactionId
-) {
-  if (!conversationId || !userId) {
     return;
   }
 
-  await env.DB.batch([
-    env.DB.prepare(`
-      INSERT INTO messages (
-        conversation_id,
-        user_id,
-        role,
-        content
-      )
-      VALUES (?, ?, 'user', ?)
-    `)
-      .bind(
-        conversationId,
-        userId,
-        userMessage
-      ),
-
-    env.DB.prepare(`
-      INSERT INTO messages (
-        conversation_id,
-        user_id,
-        role,
-        content
-      )
-      VALUES (?, ?, 'assistant', ?)
-    `)
-      .bind(
-        conversationId,
-        userId,
-        assistantReply
-      ),
-
-    env.DB.prepare(`
-      UPDATE conversations
-      SET
-        gemini_interaction_id = ?,
-        updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `)
-      .bind(
-        interactionId || null,
-        conversationId
-      )
-  ]);
+  await env.DB.prepare(`
+    INSERT INTO memories (
+      user_id,
+      category,
+      content,
+      importance,
+      source,
+      active
+    )
+    VALUES (?, ?, ?, ?, 'conversation', 1)
+  `)
+    .bind(
+      userId,
+      category,
+      content,
+      importance
+    )
+    .run();
 }
 
-function extractModelText(geminiData) {
-  if (
-    typeof geminiData?.output_text === "string" &&
-    geminiData.output_text.trim()
-  ) {
-    return geminiData.output_text;
+/* =========================
+   Gemini
+========================= */
+
+async function callGemini(
+  env,
+  prompt
+) {
+  if (!env.GEMINI_API_KEY) {
+    throw new Error(
+      "مفتاح Gemini غير موجود في Worker."
+    );
   }
 
-  const steps =
-    Array.isArray(geminiData?.steps)
-      ? geminiData.steps
-      : [];
+  const response =
+    await fetch(
+      GEMINI_URL,
+      {
+        method: "POST",
 
-  for (
-    let i = steps.length - 1;
-    i >= 0;
-    i--
-  ) {
-    const step = steps[i];
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key":
+            env.GEMINI_API_KEY
+        },
 
-    if (step?.type !== "model_output") {
-      continue;
-    }
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [
+              {
+                text:
+                  RAFIQ_SYSTEM_INSTRUCTION
+              }
+            ]
+          },
 
-    const content =
-      Array.isArray(step.content)
-        ? step.content
-        : [];
+          contents: [
+            {
+              role: "user",
+              parts: [
+                {
+                  text: prompt
+                }
+              ]
+            }
+          ],
 
-    for (
-      let j = content.length - 1;
-      j >= 0;
-      j--
-    ) {
-      const item = content[j];
+          generationConfig: {
+            responseMimeType:
+              "application/json",
 
-      if (
-        item?.type === "text" &&
-        typeof item.text === "string" &&
-        item.text.trim()
-      ) {
-        return item.text;
+            responseSchema:
+              RESPONSE_SCHEMA
+          }
+        })
       }
-    }
+    );
+
+  const raw =
+    await response.text();
+
+  let data = null;
+
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    data = null;
   }
 
-  return "";
-}
+  if (!response.ok) {
+    throw new Error(
+      data?.error?.message ||
+      raw ||
+      `Gemini HTTP ${response.status}`
+    );
+  }
 
-function parseAssistantPayload(text) {
+  const text =
+    data?.candidates?.[0]?.content?.parts
+      ?.map(part => part.text || "")
+      .join("")
+      .trim();
+
   if (!text) {
-    return {
-      reply:
-        "لم يصلني رد من نموذج الذكاء الاصطناعي.",
-      memories: []
-    };
+    throw new Error(
+      "Gemini لم يُرجع نصًا."
+    );
   }
 
   try {
-    const parsed =
-      JSON.parse(text);
-
-    return {
-      reply:
-        typeof parsed.reply === "string"
-          ? parsed.reply
-          : text,
-
-      memories:
-        Array.isArray(parsed.memories)
-          ? parsed.memories
-          : []
-    };
+    return JSON.parse(text);
   } catch {
     return {
       reply: text,
@@ -452,106 +423,11 @@ function parseAssistantPayload(text) {
   }
 }
 
-async function geminiRequest(
-  env,
-  path = "",
-  options = {}
-) {
-  const response =
-    await fetch(
-      `${GEMINI_BASE}${path}`,
-      {
-        ...options,
+/* =========================
+   Chat
+========================= */
 
-        headers: {
-          "Content-Type": "application/json",
-
-          "x-goog-api-key":
-            env.GEMINI_API_KEY,
-
-          "Api-Revision":
-            "2026-05-20",
-
-          ...(options.headers || {})
-        }
-      }
-    );
-
-  const text =
-    await response.text();
-
-  let data = null;
-
-  try {
-    data = text
-      ? JSON.parse(text)
-      : null;
-  } catch {
-    data = null;
-  }
-
-  return {
-    response,
-    text,
-    data
-  };
-}
-
-async function createBackgroundInteraction(
-  env,
-  input,
-  previousInteractionId
-) {
-  const requestBody = {
-    model: "gemini-3.8-flash",
-
-    input,
-
-    background: true,
-
-    store: true,
-
-    system_instruction:
-      RAFIQ_SYSTEM_INSTRUCTION,
-
-    response_format: {
-      type: "text",
-      mime_type: "application/json",
-      schema:
-        MEMORY_RESPONSE_SCHEMA
-    }
-  };
-
-  if (previousInteractionId) {
-    requestBody.previous_interaction_id =
-      previousInteractionId;
-  }
-
-  return await geminiRequest(
-    env,
-    "",
-    {
-      method: "POST",
-      body:
-        JSON.stringify(requestBody)
-    }
-  );
-}
-
-async function getInteraction(
-  env,
-  interactionId
-) {
-  return await geminiRequest(
-    env,
-    `/${encodeURIComponent(interactionId)}`,
-    {
-      method: "GET"
-    }
-  );
-}
-
-async function handleChatStart(
+async function handleChat(
   request,
   env
 ) {
@@ -559,14 +435,10 @@ async function handleChatStart(
     await request.json();
 
   const userId =
-    String(
-      body.user_id || ""
-    ).trim();
+    String(body.user_id || "").trim();
 
   const message =
-    String(
-      body.message || ""
-    ).trim();
+    String(body.message || "").trim();
 
   if (!userId) {
     return json({
@@ -582,24 +454,15 @@ async function handleChatStart(
     }, 400);
   }
 
-  if (!env.GEMINI_API_KEY) {
-    return json({
-      ok: false,
-      error:
-        "مفتاح Gemini غير مضبوط في Worker."
-    }, 500);
-  }
-
   await ensureUser(
     env,
     userId
   );
 
   let conversationId =
-    typeof body.conversation_id === "string" &&
-    body.conversation_id.trim()
-      ? body.conversation_id.trim()
-      : null;
+    String(
+      body.conversation_id || ""
+    ).trim();
 
   if (!conversationId) {
     conversationId =
@@ -609,300 +472,135 @@ async function handleChatStart(
       );
   }
 
-  const previousInteractionId =
-    typeof body.previous_interaction_id === "string" &&
-    body.previous_interaction_id.trim()
-      ? body.previous_interaction_id.trim()
-      : null;
-
   const memories =
-    await loadMemoryContext(
+    await loadMemories(
       env,
       userId
     );
 
-  const memoryContext =
-    buildMemoryContext(memories);
+  const recentMessages =
+    await loadRecentMessages(
+      env,
+      userId,
+      conversationId
+    );
 
-  const input = `
-معلومات الذاكرة الحالية للمستخدم:
-${memoryContext}
+  const memoryText =
+    memories.length
+      ? memories
+          .map(
+            (m, i) =>
+              `${i + 1}. [${m.category}] ${m.content}`
+          )
+          .join("\n")
+      : "لا توجد ذاكرة محفوظة.";
 
-رسالة المستخدم الحالية:
+  const historyText =
+    recentMessages.length
+      ? recentMessages
+          .map(
+            m =>
+              `${m.role === "user" ? "المستخدم" : "رفيق"}: ${m.content}`
+          )
+          .join("\n")
+      : "لا توجد رسائل سابقة في هذه المحادثة.";
+
+  const prompt = `
+الذاكرة المحفوظة عن المستخدم:
+${memoryText}
+
+سجل المحادثة الأخيرة:
+${historyText}
+
+رسالة المستخدم الجديدة:
 ${message}
 
-أجب باللغة المناسبة للغة المستخدم.
+أجب بشكل طبيعي ومفيد.
 
-إذا كانت هناك معلومة جديدة مستقرة ومفيدة مستقبلًا،
-أضفها إلى memories.
+إذا ظهرت في الرسالة معلومة مستقرة ومفيدة مستقبلًا عن المستخدم،
+يمكنك إضافتها إلى memories.
 
-لا تضف إلى memories مجرد محتوى السؤال
-أو معلومات مؤقتة.
+لا تحفظ:
+- الأسئلة العادية.
+- المعلومات المؤقتة.
+- كلمات المرور.
+- مفاتيح API.
+- الرموز السرية.
+- البيانات المالية الحساسة.
+
+الرد يجب أن يكون باللغة المناسبة للمستخدم.
 `;
 
   const result =
-    await createBackgroundInteraction(
+    await callGemini(
       env,
-      input,
-      previousInteractionId
+      prompt
     );
 
-  if (!result.response.ok) {
-    let errorMessage =
-      "حدث خطأ أثناء إنشاء مهمة Gemini.";
-
-    if (result.data?.error?.message) {
-      errorMessage =
-        result.data.error.message;
-    } else if (result.text) {
-      errorMessage =
-        result.text.slice(0, 1000);
-    }
-
-    return json({
-      ok: false,
-      error: errorMessage
-    }, result.response.status);
-  }
-
-  const interaction =
-    result.data;
-
-  if (!interaction?.id) {
-    return json({
-      ok: false,
-      error:
-        "لم يُعد Gemini بمعرّف Interaction."
-    }, 502);
-  }
-
-  return json({
-    ok: true,
-    pending: true,
-
-    interaction_id:
-      interaction.id,
-
-    conversation_id:
-      conversationId,
-
-    status:
-      interaction.status ||
-      "in_progress"
-  });
-}
-
-async function handleInteractionStatus(
-  request,
-  env
-) {
-  const body =
-    await request.json();
-
-  const userId =
+  const reply =
     String(
-      body.user_id || ""
+      result?.reply || ""
     ).trim();
 
-  const interactionId =
-    String(
-      body.interaction_id || ""
-    ).trim();
-
-  const conversationId =
-    String(
-      body.conversation_id || ""
-    ).trim();
-
-  const userMessage =
-    String(
-      body.message || ""
-    ).trim();
-
-  if (!userId) {
-    return json({
-      ok: false,
-      error: "user_id مطلوب."
-    }, 400);
-  }
-
-  if (!interactionId) {
-    return json({
-      ok: false,
-      error:
-        "interaction_id مطلوب."
-    }, 400);
-  }
-
-  const result =
-    await getInteraction(
-      env,
-      interactionId
+  if (!reply) {
+    throw new Error(
+      "رفيق لم يُرجع ردًا صالحًا."
     );
-
-  if (!result.response.ok) {
-    let errorMessage =
-      "تعذر الحصول على حالة Gemini.";
-
-    if (result.data?.error?.message) {
-      errorMessage =
-        result.data.error.message;
-    } else if (result.text) {
-      errorMessage =
-        result.text.slice(0, 1000);
-    }
-
-    return json({
-      ok: false,
-      error: errorMessage
-    }, result.response.status);
   }
 
-  const interaction =
-    result.data || {};
+  await saveMessage(
+    env,
+    userId,
+    conversationId,
+    "user",
+    message
+  );
 
-  const status =
-    interaction.status ||
-    "unknown";
-
-  /*
-   * حالات الانتظار:
-   * queued = الطلب في الطابور
-   * in_progress = Gemini يعمل عليه
-   */
-  if (
-    status === "queued" ||
-    status === "in_progress"
-  ) {
-    return json({
-      ok: true,
-      pending: true,
-      status,
-      interaction_id:
-        interactionId
-    });
-  }
-
-  /*
-   * حالة requires_action
-   * لا نعتبرها نجاحًا أو فشلًا صامتًا.
-   */
-  if (status === "requires_action") {
-    return json({
-      ok: false,
-      pending: false,
-      status,
-      interaction_id:
-        interactionId,
-      error:
-        "Gemini يحتاج إلى إجراء إضافي قبل إكمال المهمة."
-    }, 502);
-  }
+  await saveMessage(
+    env,
+    userId,
+    conversationId,
+    "assistant",
+    reply
+  );
 
   if (
-    status !== "completed" &&
-    status !== "incomplete"
-  ) {
-    return json({
-      ok: false,
-      pending: false,
-      status,
-      interaction_id:
-        interactionId,
-      error:
-        interaction?.error?.message ||
-        `انتهت مهمة Gemini بحالة: ${status}.`
-    }, 502);
-  }
-
-  const modelText =
-    extractModelText(
-      interaction
-    );
-
-  if (!modelText) {
-    return json({
-      ok: false,
-      pending: false,
-      status,
-      interaction_id:
-        interactionId,
-      error:
-        "اكتملت مهمة Gemini لكن لم يتم العثور على نص الرد."
-    }, 502);
-  }
-
-  const parsed =
-    parseAssistantPayload(
-      modelText
-    );
-
-  const assistantReply =
-    parsed.reply;
-
-  const savedMemories = [];
-
-  if (
-    Array.isArray(parsed.memories)
+    Array.isArray(result?.memories)
   ) {
     for (
-      const memory of
-      parsed.memories.slice(0, 10)
+      const memory of result.memories.slice(0, 10)
     ) {
       try {
-        const id =
-          await saveMemory(
-            env,
-            userId,
-            memory
-          );
-
-        if (id) {
-          savedMemories.push({
-            id,
-            category:
-              memory.category,
-            content:
-              memory.content
-          });
-        }
+        await saveMemory(
+          env,
+          userId,
+          memory
+        );
       } catch {
-        /*
-         * لا نفشل الرد بسبب فشل حفظ الذاكرة.
-         */
+        // لا نفشل الرد بسبب الذاكرة.
       }
     }
   }
 
-  if (conversationId) {
-    await saveConversation(
-      env,
-      userId,
-      conversationId,
-      userMessage,
-      assistantReply,
-      interactionId
-    );
-  }
+  await env.DB.prepare(`
+    UPDATE conversations
+    SET updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `)
+    .bind(conversationId)
+    .run();
 
   return json({
     ok: true,
-    pending: false,
-    status,
-
-    reply:
-      assistantReply,
-
-    interaction_id:
-      interactionId,
-
+    reply,
     conversation_id:
-      conversationId,
-
-    saved_memories:
-      savedMemories
+      conversationId
   });
 }
+
+/* =========================
+   Memories
+========================= */
 
 async function getMemories(
   request,
@@ -912,22 +610,14 @@ async function getMemories(
     await request.json();
 
   const userId =
-    String(
-      body.user_id || ""
-    ).trim();
+    String(body.user_id || "").trim();
 
   if (!userId) {
     return json({
       ok: false,
-      error:
-        "user_id مطلوب."
+      error: "user_id مطلوب."
     }, 400);
   }
-
-  await ensureUser(
-    env,
-    userId
-  );
 
   const result =
     await env.DB.prepare(`
@@ -936,7 +626,6 @@ async function getMemories(
         category,
         content,
         importance,
-        confirmed,
         created_at,
         updated_at
       FROM memories
@@ -964,9 +653,7 @@ async function deleteMemory(
     await request.json();
 
   const userId =
-    String(
-      body.user_id || ""
-    ).trim();
+    String(body.user_id || "").trim();
 
   const memoryId =
     Number(body.memory_id);
@@ -982,73 +669,32 @@ async function deleteMemory(
     }, 400);
   }
 
-  const memory =
-    await env.DB.prepare(`
-      SELECT id
-      FROM memories
-      WHERE id = ?
-        AND user_id = ?
-        AND active = 1
-      LIMIT 1
-    `)
-      .bind(
-        memoryId,
-        userId
-      )
-      .first();
-
-  if (!memory) {
-    return json({
-      ok: false,
-      error:
-        "الذاكرة غير موجودة."
-    }, 404);
-  }
-
-  await env.DB.batch([
-    env.DB.prepare(`
-      UPDATE memories
-      SET
-        active = 0,
-        updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-        AND user_id = ?
-    `)
-      .bind(
-        memoryId,
-        userId
-      ),
-
-    env.DB.prepare(`
-      INSERT INTO memory_actions (
-        user_id,
-        memory_id,
-        action,
-        details
-      )
-      VALUES (
-        ?,
-        ?,
-        'delete',
-        'Deleted by user'
-      )
-    `)
-      .bind(
-        userId,
-        memoryId
-      )
-  ]);
+  await env.DB.prepare(`
+    UPDATE memories
+    SET
+      active = 0,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+      AND user_id = ?
+  `)
+    .bind(
+      memoryId,
+      userId
+    )
+    .run();
 
   return json({
     ok: true
   });
 }
 
+/* =========================
+   Worker
+========================= */
+
 export default {
   async fetch(request, env) {
-    /*
-     * CORS preflight
-     */
+
     if (
       request.method === "OPTIONS"
     ) {
@@ -1062,18 +708,13 @@ export default {
       );
     }
 
-    /*
-     * Health check
-     */
     if (
       request.method === "GET"
     ) {
       return json({
         ok: true,
-        service:
-          "Rafiq AI",
-        status:
-          "online"
+        service: "Rafiq AI",
+        status: "online"
       });
     }
 
@@ -1082,16 +723,15 @@ export default {
     ) {
       return json({
         ok: false,
-        error:
-          "Method not allowed."
+        error: "Method not allowed."
       }, 405);
     }
 
     try {
-      /*
-       * تهيئة D1 قبل أي عملية تستخدم الجداول.
-       */
-      await ensureDatabase(env);
+
+      await ensureDatabase(
+        env
+      );
 
       const body =
         await request
@@ -1099,22 +739,12 @@ export default {
           .json();
 
       const action =
-        body?.action ||
-        "chat";
+        body?.action || "chat";
 
       if (
         action === "chat"
       ) {
-        return await handleChatStart(
-          request,
-          env
-        );
-      }
-
-      if (
-        action === "interaction_status"
-      ) {
-        return await handleInteractionStatus(
+        return await handleChat(
           request,
           env
         );
@@ -1145,16 +775,12 @@ export default {
       }, 400);
 
     } catch (error) {
-      /*
-       * مهم:
-       * نعيد الخطأ عبر نفس CORS headers
-       * حتى لا يظهر للواجهة كـ Failed to fetch.
-       */
+
       return json({
         ok: false,
         error:
           error?.message ||
-          "حدث خطأ داخلي في Rafiq AI."
+          "حدث خطأ داخلي في رفيق AI."
       }, 500);
     }
   }
