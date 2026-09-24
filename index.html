@@ -544,17 +544,20 @@
   <div class="app">
 
     <!-- Sidebar -->
+
     <aside class="sidebar" id="sidebar">
 
       <div class="sidebar-header">
 
         <div class="brand">
+
           <div class="brand-icon">ر</div>
 
           <div class="brand-text">
             <strong>رفيق AI</strong>
             <span>مساعدك الشخصي بالذكاء الاصطناعي</span>
           </div>
+
         </div>
 
         <button
@@ -631,9 +634,11 @@
     </aside>
 
     <!-- Overlay -->
+
     <div class="overlay" id="overlay"></div>
 
     <!-- Main -->
+
     <main class="main">
 
       <header class="topbar">
@@ -761,20 +766,31 @@
 
   <script>
 
+    /*
+     * رفيق AI
+     *
+     * هذا الإصدار يستخدم:
+     *
+     * GitHub Pages
+     *      ↓
+     * Cloudflare Worker
+     *      ↓
+     * Gemini generateContent
+     *      ↓
+     * الرد المباشر
+     *
+     * لا يوجد Interaction.
+     * لا يوجد Background.
+     * لا يوجد Polling.
+     */
+
     const WORKER_URL =
       "https://rafiq-ai.snforem.workers.dev/";
 
-    /*
-     * مدة الانتظار القصوى للمهمة الواحدة.
-     * إذا لم يكتمل Gemini خلال هذه المدة،
-     * لا نترك الواجهة عالقة إلى ما لا نهاية.
-     */
-    const MAX_POLL_TIME = 120000;
 
-    /*
-     * الفاصل بين الاستعلامات.
-     */
-    const POLL_INTERVAL = 1500;
+    /* =========================
+       عناصر الواجهة
+    ========================= */
 
     const sidebar =
       document.getElementById("sidebar");
@@ -800,9 +816,6 @@
     const chat =
       document.getElementById("chat");
 
-    const welcome =
-      document.getElementById("welcome");
-
     const messageInput =
       document.getElementById("messageInput");
 
@@ -811,6 +824,11 @@
 
     const attachButton =
       document.getElementById("attachButton");
+
+
+    /* =========================
+       القائمة الجانبية
+    ========================= */
 
     function openMenu() {
       sidebar.classList.add("open");
@@ -837,29 +855,10 @@
       closeMenu
     );
 
-    function resetChat() {
 
-      chatInner.innerHTML = "";
-
-      chatInner.appendChild(
-        createWelcome()
-      );
-
-      messageInput.value = "";
-
-      messageInput.style.height =
-        "auto";
-
-      chat.scrollTop = 0;
-
-      localStorage.removeItem(
-        "rafiq_conversation_id"
-      );
-
-      localStorage.removeItem(
-        "rafiq_previous_interaction_id"
-      );
-    }
+    /* =========================
+       شاشة البداية
+    ========================= */
 
     function createWelcome() {
 
@@ -931,6 +930,32 @@
       return wrapper;
     }
 
+
+    /* =========================
+       محادثة جديدة
+    ========================= */
+
+    function resetChat() {
+
+      chatInner.innerHTML = "";
+
+      chatInner.appendChild(
+        createWelcome()
+      );
+
+      messageInput.value = "";
+
+      messageInput.style.height =
+        "auto";
+
+      chat.scrollTop = 0;
+
+      localStorage.removeItem(
+        "rafiq_conversation_id"
+      );
+
+    }
+
     newChat.addEventListener(
       "click",
       () => {
@@ -947,10 +972,18 @@
       resetChat
     );
 
+
+    /* =========================
+       إضافة رسالة
+    ========================= */
+
     function addMessage(
       role,
       text
     ) {
+
+      const welcome =
+        document.getElementById("welcome");
 
       if (
         welcome &&
@@ -1007,6 +1040,11 @@
       return message;
     }
 
+
+    /* =========================
+       تكبير مربع الكتابة
+    ========================= */
+
     function autoResize() {
 
       messageInput.style.height =
@@ -1024,208 +1062,12 @@
       autoResize
     );
 
-    messageInput.addEventListener(
-      "keydown",
-      event => {
 
-        if (
-          event.key === "Enter" &&
-          !event.shiftKey
-        ) {
+    /* =========================
+       المستخدم
+    ========================= */
 
-          event.preventDefault();
-
-          sendMessage();
-
-        }
-
-      }
-    );
-
-    sendButton.addEventListener(
-      "click",
-      sendMessage
-    );
-
-    /*
-     * انتظار قصير بين كل استعلام وحالة.
-     */
-    function sleep(ms) {
-      return new Promise(
-        resolve =>
-          setTimeout(
-            resolve,
-            ms
-          )
-      );
-    }
-
-    /*
-     * هذه هي النقطة الجديدة الأساسية.
-     *
-     * نطلب من Worker حالة Interaction
-     * بدل انتظار الطلب الأصلي إلى ما لا نهاية.
-     */
-    async function pollInteraction(
-      userId,
-      interactionId,
-      conversationId,
-      userMessage,
-      loadingContent
-    ) {
-
-      const startedAt =
-        Date.now();
-
-      let dots = 0;
-
-      while (
-        Date.now() - startedAt <
-        MAX_POLL_TIME
-      ) {
-
-        /*
-         * تحديث بسيط للنص أثناء الانتظار
-         * حتى يعرف المستخدم أن الاتصال حي.
-         */
-        dots =
-          (dots + 1) % 4;
-
-        loadingContent.textContent =
-          "جاري التفكير" +
-          ".".repeat(dots);
-
-        await sleep(
-          POLL_INTERVAL
-        );
-
-        const response =
-          await fetch(
-            WORKER_URL,
-            {
-              method: "POST",
-
-              headers: {
-                "Content-Type":
-                  "application/json"
-              },
-
-              body:
-                JSON.stringify({
-
-                  action:
-                    "interaction_status",
-
-                  user_id:
-                    userId,
-
-                  interaction_id:
-                    interactionId,
-
-                  conversation_id:
-                    conversationId,
-
-                  message:
-                    userMessage
-
-                })
-            }
-          );
-
-        let data = null;
-
-        try {
-          data =
-            await response.json();
-        } catch {
-          throw new Error(
-            "تعذر قراءة رد الخادم."
-          );
-        }
-
-        if (
-          !response.ok ||
-          !data.ok
-        ) {
-
-          throw new Error(
-            data.error ||
-            "حدث خطأ أثناء متابعة مهمة رفيق."
-          );
-        }
-
-        /*
-         * ما زال Gemini يعمل.
-         */
-        if (
-          data.pending ||
-          data.status ===
-            "in_progress"
-        ) {
-          continue;
-        }
-
-        /*
-         * اكتملت المهمة.
-         */
-        if (
-          data.status ===
-            "completed" &&
-          data.reply
-        ) {
-
-          if (
-            data.conversation_id
-          ) {
-
-            localStorage.setItem(
-              "rafiq_conversation_id",
-              data.conversation_id
-            );
-          }
-
-          if (
-            data.interaction_id
-          ) {
-
-            localStorage.setItem(
-              "rafiq_previous_interaction_id",
-              data.interaction_id
-            );
-          }
-
-          return data.reply;
-        }
-
-        throw new Error(
-          data.error ||
-          "انتهت مهمة رفيق دون رد."
-        );
-      }
-
-      throw new Error(
-        "استغرق رفيق وقتًا أطول من المتوقع. حاول إرسال الرسالة مرة أخرى."
-      );
-    }
-
-    async function sendMessage() {
-
-      const text =
-        messageInput.value.trim();
-
-      if (!text) return;
-
-      addMessage(
-        "user",
-        text
-      );
-
-      messageInput.value = "";
-
-      messageInput.style.height =
-        "auto";
-
-      sendButton.disabled = true;
+    function getUserId() {
 
       let userId =
         localStorage.getItem(
@@ -1243,14 +1085,41 @@
         );
       }
 
-      let conversationId =
+      return userId;
+    }
+
+
+    /* =========================
+       إرسال الرسالة
+    ========================= */
+
+    async function sendMessage() {
+
+      const text =
+        messageInput.value.trim();
+
+      if (!text) {
+        return;
+      }
+
+      addMessage(
+        "user",
+        text
+      );
+
+      messageInput.value = "";
+
+      messageInput.style.height =
+        "auto";
+
+      sendButton.disabled = true;
+
+      const userId =
+        getUserId();
+
+      const conversationId =
         localStorage.getItem(
           "rafiq_conversation_id"
-        ) || null;
-
-      let previousInteractionId =
-        localStorage.getItem(
-          "rafiq_previous_interaction_id"
         ) || null;
 
       const loadingMessage =
@@ -1267,12 +1136,13 @@
       try {
 
         /*
-         * المرحلة الأولى:
-         * إنشاء Background Interaction.
+         * طلب واحد فقط.
          *
-         * هذا الطلب يجب أن يرجع بسرعة
-         * بمعرّف المهمة.
+         * لا polling.
+         * لا interaction.
+         * لا انتظار لمهمة منفصلة.
          */
+
         const response =
           await fetch(
             WORKER_URL,
@@ -1296,9 +1166,6 @@
                   conversation_id:
                     conversationId,
 
-                  previous_interaction_id:
-                    previousInteractionId,
-
                   message:
                     text
 
@@ -1306,16 +1173,22 @@
             }
           );
 
+
         let data = null;
 
         try {
+
           data =
             await response.json();
+
         } catch {
+
           throw new Error(
             "لم يتمكن رفيق من قراءة رد الخادم."
           );
+
         }
+
 
         if (
           !response.ok ||
@@ -1323,61 +1196,29 @@
         ) {
 
           throw new Error(
-            data.error ||
-            "تعذر إنشاء مهمة رفيق."
+            data?.error ||
+            `خطأ من الخادم (${response.status})`
           );
+
         }
 
-        /*
-         * نحفظ conversation_id
-         * فورًا.
-         */
+
         if (
           data.conversation_id
         ) {
 
-          conversationId =
-            data.conversation_id;
-
           localStorage.setItem(
             "rafiq_conversation_id",
-            conversationId
+            data.conversation_id
           );
+
         }
 
-        /*
-         * لا نحفظ interaction_id
-         * على أنه previous interaction
-         * إلا بعد اكتمال المهمة.
-         *
-         * هذا مهم جدًا.
-         */
-        const interactionId =
-          data.interaction_id;
-
-        if (!interactionId) {
-
-          throw new Error(
-            "لم يعُد الخادم بمعرّف مهمة Gemini."
-          );
-        }
-
-        /*
-         * المرحلة الثانية:
-         * متابعة المهمة حتى تكتمل.
-         */
-        const reply =
-          await pollInteraction(
-            userId,
-            interactionId,
-            conversationId,
-            text,
-            loadingContent
-          );
 
         loadingContent.textContent =
-          reply ||
+          data.reply ||
           "لم يصل رد من رفيق.";
+
 
       } catch (error) {
 
@@ -1386,9 +1227,16 @@
           error
         );
 
+        /*
+         * مهم:
+         * إذا كان Worker قد أعاد رسالة خطأ،
+         * نعرضها للمستخدم بدل Failed to fetch.
+         */
+
         loadingContent.textContent =
           error?.message ||
-          "حدث خطأ أثناء الاتصال برفيق. حاول مرة أخرى.";
+          "حدث خطأ أثناء الاتصال برفيق.";
+
 
       } finally {
 
@@ -1398,7 +1246,46 @@
         messageInput.focus();
 
       }
+
     }
+
+
+    /* =========================
+       Enter
+    ========================= */
+
+    messageInput.addEventListener(
+      "keydown",
+      event => {
+
+        if (
+          event.key === "Enter" &&
+          !event.shiftKey
+        ) {
+
+          event.preventDefault();
+
+          sendMessage();
+
+        }
+
+      }
+    );
+
+
+    /* =========================
+       زر الإرسال
+    ========================= */
+
+    sendButton.addEventListener(
+      "click",
+      sendMessage
+    );
+
+
+    /* =========================
+       المرفقات
+    ========================= */
 
     attachButton.addEventListener(
       "click",
@@ -1410,6 +1297,11 @@
 
       }
     );
+
+
+    /* =========================
+       القائمة
+    ========================= */
 
     document
       .querySelectorAll(
@@ -1441,8 +1333,15 @@
 
       });
 
+
+    /* =========================
+       الاقتراحات
+    ========================= */
+
     document
-      .querySelectorAll(".suggestion")
+      .querySelectorAll(
+        ".suggestion"
+      )
       .forEach(button => {
 
         button.addEventListener(
