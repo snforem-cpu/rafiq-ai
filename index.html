@@ -1,4 +1,3 @@
-```html
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
@@ -529,37 +528,46 @@
       }
 
       .suggestion:hover {
-        background: var(--surface-2);
+        background: #1d2129;
       }
     }
   </style>
 </head>
 
 <body>
-  <div class="app">
 
-    <div class="overlay" id="overlay"></div>
+  <div class="app">
 
     <!-- Sidebar -->
     <aside class="sidebar" id="sidebar">
 
       <div class="sidebar-header">
+
         <div class="brand">
           <div class="brand-icon">ر</div>
+
           <div class="brand-text">
             <strong>رفيق AI</strong>
             <span>مساعدك الشخصي بالذكاء الاصطناعي</span>
           </div>
         </div>
 
-        <button class="icon-button" id="closeSidebar" aria-label="إغلاق القائمة">×</button>
+        <button
+          class="icon-button"
+          id="closeSidebar"
+          aria-label="إغلاق القائمة">
+          ×
+        </button>
+
       </div>
 
-      <button class="new-chat" id="newChat">＋ محادثة جديدة</button>
+      <button class="new-chat" id="newChat">
+        ＋ محادثة جديدة
+      </button>
 
       <nav class="nav">
 
-        <div class="nav-section">الرئيسية</div>
+        <div class="nav-section">المحادثة</div>
 
         <button class="nav-button" data-section="chats">
           <span class="nav-icon">💬</span>
@@ -571,15 +579,13 @@
           <span>ذاكرتي</span>
         </button>
 
-        <div class="nav-section">قدرات رفيق</div>
-
-        <button class="nav-button" data-section="search">
-          <span class="nav-icon">🔎</span>
+        <button class="nav-button" data-section="web">
+          <span class="nav-icon">🌐</span>
           <span>البحث على الويب</span>
         </button>
 
         <button class="nav-button" data-section="files">
-          <span class="nav-icon">📎</span>
+          <span class="nav-icon">📁</span>
           <span>الملفات</span>
         </button>
 
@@ -603,39 +609,65 @@
       </nav>
 
       <div class="sidebar-footer">
+
         <button class="profile-button" data-section="account">
+
           <div class="profile-avatar">👤</div>
+
           <div>
             <strong>حسابي</strong>
             <small>تسجيل الدخول والمزامنة</small>
           </div>
+
         </button>
+
       </div>
 
     </aside>
+
+    <!-- Overlay -->
+    <div class="overlay" id="overlay"></div>
 
     <!-- Main -->
     <main class="main">
 
       <header class="topbar">
+
         <div class="topbar-title">
-          <button class="menu-button" id="openSidebar" aria-label="فتح القائمة">☰</button>
+
+          <button
+            class="menu-button"
+            id="openSidebar"
+            aria-label="فتح القائمة">
+            ☰
+          </button>
 
           <div>
             <strong>رفيق AI</strong>
             <div class="status">● متصل</div>
           </div>
+
         </div>
 
         <div class="topbar-actions">
-          <button class="icon-button" id="topNewChat" aria-label="محادثة جديدة">＋</button>
+
+          <button
+            class="icon-button"
+            id="topNewChat"
+            aria-label="محادثة جديدة">
+            ＋
+          </button>
+
         </div>
+
       </header>
 
       <section class="chat" id="chat">
+
         <div class="chat-inner" id="chatInner">
 
           <div class="welcome" id="welcome">
+
             <div class="welcome-icon">ر</div>
 
             <h1>مرحبًا، أنا رفيق</h1>
@@ -646,29 +678,43 @@
             </p>
 
             <div class="suggestions">
-              <button class="suggestion" data-prompt="ساعدني في التخطيط لمشروع جديد">
+
+              <button
+                class="suggestion"
+                data-prompt="ساعدني في التخطيط لمشروع جديد">
                 💡 ساعدني في التخطيط لمشروع جديد
               </button>
 
-              <button class="suggestion" data-prompt="اشرح لي موضوعًا بطريقة بسيطة">
+              <button
+                class="suggestion"
+                data-prompt="اشرح لي موضوعًا بطريقة بسيطة">
                 📚 اشرح لي موضوعًا بطريقة بسيطة
               </button>
 
-              <button class="suggestion" data-prompt="حلل هذه الفكرة معي خطوة بخطوة">
+              <button
+                class="suggestion"
+                data-prompt="حلل هذه الفكرة معي خطوة بخطوة">
                 🔎 حلل هذه الفكرة معي
               </button>
 
-              <button class="suggestion" data-prompt="ما الذي تستطيع مساعدتي فيه؟">
+              <button
+                class="suggestion"
+                data-prompt="ما الذي تستطيع مساعدتي فيه؟">
                 ✨ ماذا تستطيع أن تفعل؟
               </button>
+
             </div>
+
           </div>
 
         </div>
+
       </section>
 
       <!-- Composer -->
+
       <div class="composer-area">
+
         <div class="composer-wrap">
 
           <div class="composer">
@@ -685,8 +731,7 @@
               id="messageInput"
               rows="1"
               placeholder="اكتب رسالتك إلى رفيق..."
-              aria-label="رسالتك">
-            </textarea>
+              aria-label="رسالتك"></textarea>
 
             <button
               class="composer-button send-button"
@@ -702,12 +747,15 @@
           </div>
 
         </div>
+
       </div>
 
     </main>
+
   </div>
 
   <script>
+
     const sidebar = document.getElementById("sidebar");
     const overlay = document.getElementById("overlay");
     const openSidebar = document.getElementById("openSidebar");
@@ -736,80 +784,119 @@
     overlay.addEventListener("click", closeMenu);
 
     function resetChat() {
+
       chatInner.innerHTML = "";
+
       chatInner.appendChild(createWelcome());
+
       messageInput.value = "";
       messageInput.style.height = "auto";
+
       chat.scrollTop = 0;
+
+      localStorage.removeItem("rafiq_conversation_id");
+      localStorage.removeItem("rafiq_previous_interaction_id");
     }
 
     function createWelcome() {
+
       const wrapper = document.createElement("div");
+
       wrapper.className = "welcome";
 
       wrapper.innerHTML = `
         <div class="welcome-icon">ر</div>
+
         <h1>مرحبًا، أنا رفيق</h1>
+
         <p>
           أنا رفيق، مساعدك الشخصي بالذكاء الاصطناعي.
           أخبرني بما تريد، وسأساعدك في التفكير، البحث، التحليل وإنجاز المهام.
         </p>
 
         <div class="suggestions">
-          <button class="suggestion" data-prompt="ساعدني في التخطيط لمشروع جديد">
+
+          <button
+            class="suggestion"
+            data-prompt="ساعدني في التخطيط لمشروع جديد">
             💡 ساعدني في التخطيط لمشروع جديد
           </button>
 
-          <button class="suggestion" data-prompt="اشرح لي موضوعًا بطريقة بسيطة">
+          <button
+            class="suggestion"
+            data-prompt="اشرح لي موضوعًا بطريقة بسيطة">
             📚 اشرح لي موضوعًا بطريقة بسيطة
           </button>
 
-          <button class="suggestion" data-prompt="حلل هذه الفكرة معي خطوة بخطوة">
+          <button
+            class="suggestion"
+            data-prompt="حلل هذه الفكرة معي خطوة بخطوة">
             🔎 حلل هذه الفكرة معي
           </button>
 
-          <button class="suggestion" data-prompt="ما الذي تستطيع مساعدتي فيه؟">
+          <button
+            class="suggestion"
+            data-prompt="ما الذي تستطيع مساعدتي فيه؟">
             ✨ ماذا تستطيع أن تفعل؟
           </button>
+
         </div>
       `;
 
       wrapper.querySelectorAll(".suggestion").forEach(button => {
+
         button.addEventListener("click", () => {
+
           messageInput.value = button.dataset.prompt;
+
           autoResize();
+
           messageInput.focus();
+
         });
+
       });
 
       return wrapper;
     }
 
     newChat.addEventListener("click", () => {
+
       resetChat();
+
       closeMenu();
+
     });
 
     topNewChat.addEventListener("click", resetChat);
 
     function addMessage(role, text) {
+
       if (welcome && welcome.parentNode) {
         welcome.remove();
       }
 
       const message = document.createElement("div");
+
       message.className = `message ${role}`;
 
       const avatar = document.createElement("div");
+
       avatar.className = "message-avatar";
-      avatar.textContent = role === "assistant" ? "ر" : "أنت";
+
+      avatar.textContent =
+        role === "assistant" ? "ر" : "أنت";
 
       const content = document.createElement("div");
+
       content.className = "message-content";
+
       content.textContent = text;
 
       message.appendChild(avatar);
+
       message.appendChild(content);
+
       chatInner.appendChild(message);
 
       requestAnimationFrame(() => {
@@ -820,23 +907,32 @@
     }
 
     function autoResize() {
+
       messageInput.style.height = "auto";
+
       messageInput.style.height =
         Math.min(messageInput.scrollHeight, 150) + "px";
+
     }
 
     messageInput.addEventListener("input", autoResize);
 
     messageInput.addEventListener("keydown", event => {
+
       if (event.key === "Enter" && !event.shiftKey) {
+
         event.preventDefault();
+
         sendMessage();
+
       }
+
     });
 
     sendButton.addEventListener("click", sendMessage);
 
-    function sendMessage() {
+    async function sendMessage() {
+
       const text = messageInput.value.trim();
 
       if (!text) return;
@@ -844,48 +940,189 @@
       addMessage("user", text);
 
       messageInput.value = "";
+
       messageInput.style.height = "auto";
 
-      /*
-       * الاتصال الحقيقي بالـWorker سيُضاف في المرحلة التالية.
-       * لا نضع اتصالًا وهميًا هنا حتى لا نعتبر الوظيفة مكتملة
-       * قبل ربطها فعليًا بالـBackend.
-       */
+      sendButton.disabled = true;
 
-      addMessage(
-        "assistant",
-        "واجهة رفيق جاهزة. سيتم الآن ربط المحادثة بالـBackend الحقيقي."
-      );
+      let userId =
+        localStorage.getItem("rafiq_user_id");
+
+      if (!userId) {
+
+        userId = crypto.randomUUID();
+
+        localStorage.setItem(
+          "rafiq_user_id",
+          userId
+        );
+
+      }
+
+      let conversationId =
+        localStorage.getItem(
+          "rafiq_conversation_id"
+        ) || null;
+
+      let previousInteractionId =
+        localStorage.getItem(
+          "rafiq_previous_interaction_id"
+        ) || null;
+
+      const loadingMessage =
+        addMessage(
+          "assistant",
+          "جاري التفكير..."
+        );
+
+      const loadingContent =
+        loadingMessage.querySelector(
+          ".message-content"
+        );
+
+      try {
+
+        const response = await fetch(
+          "https://rafiq-ai.snforem.workers.dev/",
+          {
+            method: "POST",
+
+            headers: {
+              "Content-Type": "application/json"
+            },
+
+            body: JSON.stringify({
+
+              action: "chat",
+
+              user_id: userId,
+
+              conversation_id:
+                conversationId,
+
+              previous_interaction_id:
+                previousInteractionId,
+
+              message: text
+
+            })
+
+          }
+        );
+
+        const data =
+          await response.json();
+
+        if (!response.ok || !data.ok) {
+
+          throw new Error(
+            data.error ||
+            "تعذر الاتصال بخدمة رفيق."
+          );
+
+        }
+
+        if (data.conversation_id) {
+
+          localStorage.setItem(
+            "rafiq_conversation_id",
+            data.conversation_id
+          );
+
+        }
+
+        if (data.interaction_id) {
+
+          localStorage.setItem(
+            "rafiq_previous_interaction_id",
+            data.interaction_id
+          );
+
+        }
+
+        loadingContent.textContent =
+          data.reply ||
+          "لم يصل رد من رفيق.";
+
+      } catch (error) {
+
+        console.error(
+          "Rafiq connection error:",
+          error
+        );
+
+        loadingContent.textContent =
+          "حدث خطأ أثناء الاتصال برفيق. حاول مرة أخرى.";
+
+      } finally {
+
+        sendButton.disabled = false;
+
+        messageInput.focus();
+
+      }
+
     }
 
     attachButton.addEventListener("click", () => {
-      alert("رفع الملفات سيتم تفعيله عند ربط طبقة الملفات بالـBackend.");
+
+      alert(
+        "رفع الملفات سيتم تفعيله عند ربط طبقة الملفات بالـBackend."
+      );
+
     });
 
-    document.querySelectorAll(".nav-button, .profile-button").forEach(button => {
-      button.addEventListener("click", () => {
-        const section = button.dataset.section;
+    document
+      .querySelectorAll(
+        ".nav-button, .profile-button"
+      )
+      .forEach(button => {
 
-        if (section) {
-          alert(
-            "قسم " +
-            section +
-            " موجود في بنية رفيق وسيتم ربطه بالوظيفة الحقيقية في مرحلته."
-          );
-        }
+        button.addEventListener(
+          "click",
+          () => {
 
-        closeMenu();
+            const section =
+              button.dataset.section;
+
+            if (section) {
+
+              alert(
+                "قسم " +
+                section +
+                " موجود في بنية رفيق وسيتم ربطه بالوظيفة الحقيقية في مرحلته."
+              );
+
+            }
+
+            closeMenu();
+
+          }
+        );
+
       });
-    });
 
-    document.querySelectorAll(".suggestion").forEach(button => {
-      button.addEventListener("click", () => {
-        messageInput.value = button.dataset.prompt;
-        autoResize();
-        messageInput.focus();
+    document
+      .querySelectorAll(".suggestion")
+      .forEach(button => {
+
+        button.addEventListener(
+          "click",
+          () => {
+
+            messageInput.value =
+              button.dataset.prompt;
+
+            autoResize();
+
+            messageInput.focus();
+
+          }
+        );
+
       });
-    });
+
   </script>
+
 </body>
-</html>
-```
+  </html>
