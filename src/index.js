@@ -5,10 +5,28 @@ const CORS_HEADERS = {
   "Access-Control-Max-Age": "86400"
 };
 
-const GEMINI_MODEL = "gemini-3.8-flash";
+/*
+  ترتيب النماذج من الأقوى إلى الأقل:
+  1. Gemini 3.8 Flash
+  2. Gemini 3.7 Flash
+  3. Gemini 3.6 Flash
+  4. Gemini 3.5 Flash
+  5. Gemini 3.5 Flash-Lite
 
-const GEMINI_URL =
-  `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+  يبدأ كل طلب دائمًا من النموذج الأول.
+  إذا حدث خطأ مؤقت/ازدحام، ينتقل تلقائيًا للنموذج التالي.
+*/
+
+const GEMINI_MODELS = [
+  "gemini-3.8-flash",
+  "gemini-3.7-flash",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash",
+  "gemini-3.5-flash-lite"
+];
+
+const GEMINI_API_BASE =
+  "https://generativelanguage.googleapis.com/v1beta/models";
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -62,7 +80,11 @@ async function saveUser(db, userId) {
   ).run();
 }
 
-async function saveConversation(db, conversationId, userId) {
+async function saveConversation(
+  db,
+  conversationId,
+  userId
+) {
   const now = new Date().toISOString();
 
   await db.prepare(`
@@ -141,7 +163,10 @@ async function getConversationHistory(
   لذلك نستخدم content بدل memory.
 */
 
-async function getUserMemories(db, userId) {
+async function getUserMemories(
+  db,
+  userId
+) {
   const result = await db.prepare(`
     SELECT id, category, content, importance, source,
            confirmed, active, created_at
@@ -150,13 +175,20 @@ async function getUserMemories(db, userId) {
       AND active = 1
     ORDER BY id DESC
     LIMIT 100
-  `).bind(userId).all();
+  `).bind(
+    userId
+  ).all();
 
   return result.results || [];
 }
 
-async function saveMemory(db, userId, memory) {
-  const clean = String(memory || "").trim();
+async function saveMemory(
+  db,
+  userId,
+  memory
+) {
+  const clean =
+    String(memory || "").trim();
 
   if (!clean) {
     return;
@@ -207,7 +239,9 @@ async function deleteMemory(
   ).run();
 }
 
-function buildSystemInstruction(memories) {
+function buildSystemInstruction(
+  memories
+) {
   let memoryText =
     "لا توجد معلومات محفوظة عن المستخدم حتى الآن.";
 
@@ -248,6 +282,108 @@ ${memoryText}
 `;
 }
 
+/*
+  نعتبر هذه الأخطاء مؤقتة أو مرتبطة بالضغط/التوافر.
+  عند حدوثها ينتقل رفيق للنموذج التالي.
+
+  لا ننتقل عند أخطاء مثل:
+  400 = طلب غير صحيح
+  401/403 = مشكلة صلاحية أو مفتاح
+  404 = نموذج/مسار غير موجود
+*/
+
+function isRetryableGeminiStatus(
+  status
+) {
+  return [
+    408,
+    429,
+    500,
+    502,
+    503,
+    504
+  ].includes(status);
+}
+
+async function callGeminiModel(
+  env,
+  model,
+  payload
+) {
+  const url =
+    `${GEMINI_API_BASE}/${model}:generateContent`;
+
+  const response = await fetch(
+    url,
+    {
+      method: "POST",
+
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key":
+          env.GEMINI_API_KEY
+      },
+
+      body: JSON.stringify(payload)
+    }
+  );
+
+  const raw =
+    await response.text();
+
+  if (!response.ok) {
+    const error =
+      new Error(
+        `Gemini API ${response.status}: ${raw}`
+      );
+
+    error.status =
+      response.status;
+
+    error.raw =
+      raw;
+
+    throw error;
+  }
+
+  let data;
+
+  try {
+    data =
+      JSON.parse(raw);
+  } catch {
+    const error =
+      new Error(
+        "Gemini أعاد استجابة غير صالحة."
+      );
+
+    error.status =
+      response.status;
+
+    throw error;
+  }
+
+  const reply =
+    data?.candidates?.[0]?.content?.parts
+      ?.map(part => part.text || "")
+      .join("")
+      .trim();
+
+  if (!reply) {
+    const error =
+      new Error(
+        "Gemini لم يُرجع نصًا."
+      );
+
+    error.status =
+      response.status;
+
+    throw error;
+  }
+
+  return reply;
+}
+
 async function callGemini(
   env,
   history,
@@ -268,6 +404,7 @@ async function callGemini(
         item.role === "assistant"
           ? "model"
           : "user",
+
       parts: [
         {
           text: item.content
@@ -278,6 +415,7 @@ async function callGemini(
 
   contents.push({
     role: "user",
+
     parts: [
       {
         text: userMessage
@@ -290,7 +428,9 @@ async function callGemini(
       parts: [
         {
           text:
-            buildSystemInstruction(memories)
+            buildSystemInstruction(
+              memories
+            )
         }
       ]
     },
@@ -303,53 +443,96 @@ async function callGemini(
     }
   };
 
-  const response = await fetch(
-    GEMINI_URL,
-    {
-      method: "POST",
+  let lastError = null;
 
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key":
-          env.GEMINI_API_KEY
-      },
+  /*
+    تجربة النماذج بالترتيب:
+    3.8 → 3.7 → 3.6 → 3.5 → 3.5-lite
+  */
 
-      body: JSON.stringify(payload)
+  for (
+    let i = 0;
+    i < GEMINI_MODELS.length;
+    i++
+  ) {
+    const model =
+      GEMINI_MODELS[i];
+
+    try {
+      console.log(
+        `Gemini محاولة ${i + 1}/${GEMINI_MODELS.length}: ${model}`
+      );
+
+      const reply =
+        await callGeminiModel(
+          env,
+          model,
+          payload
+        );
+
+      console.log(
+        `Gemini نجح باستخدام: ${model}`
+      );
+
+      return reply;
+
+    } catch (error) {
+      lastError =
+        error;
+
+      const status =
+        Number(
+          error?.status || 0
+        );
+
+      console.error(
+        `Gemini فشل باستخدام ${model}. الحالة: ${status}`,
+        error
+      );
+
+      /*
+        إذا كان الخطأ مؤقتًا،
+        ننتقل للنموذج التالي.
+
+        أما الخطأ غير القابل لإعادة المحاولة،
+        نتوقف فورًا.
+      */
+
+      if (
+        !isRetryableGeminiStatus(
+          status
+        )
+      ) {
+        throw error;
+      }
+
+      /*
+        إذا كان هذا آخر نموذج،
+        لا يوجد نموذج آخر للانتقال إليه.
+      */
+
+      if (
+        i ===
+        GEMINI_MODELS.length - 1
+      ) {
+        break;
+      }
     }
+  }
+
+  /*
+    جميع النماذج فشلت بسبب أخطاء مؤقتة.
+  */
+
+  if (lastError) {
+    throw new Error(
+      "جميع نماذج Gemini المتاحة مشغولة أو غير متاحة مؤقتًا. حاول مرة أخرى بعد قليل."
+    );
+  }
+
+  throw new Error(
+    "حدث خطأ أثناء الاتصال بالذكاء الاصطناعي."
   );
-
-  const raw =
-    await response.text();
-
-  if (!response.ok) {
-    throw new Error(
-      `Gemini API ${response.status}: ${raw}`
-    );
-  }
-
-  let data;
-
-  try {
-    data = JSON.parse(raw);
-  } catch {
-    throw new Error(
-      "Gemini أعاد استجابة غير صالحة."
-    );
-  }
-
-  const reply =
-    data?.candidates?.[0]?.content?.parts
-      ?.map(part => part.text || "")
-      .join("")
-      .trim();
-
-  if (!reply) {
-    throw new Error(
-      "Gemini لم يُرجع نصًا."
-    );
-  }
-
-  return reply;
 }
 
 async function handleChat(
@@ -364,12 +547,15 @@ async function handleChat(
     }, 500);
   }
 
-  await ensureDatabase(env.DB);
+  await ensureDatabase(
+    env.DB
+  );
 
   let body;
 
   try {
-    body = await request.json();
+    body =
+      await request.json();
   } catch {
     return json({
       ok: false,
@@ -449,6 +635,7 @@ async function handleChat(
         memories,
         message
       );
+
   } catch (error) {
     console.error(
       "Gemini error:",
@@ -491,12 +678,15 @@ async function getMemories(
     }, 500);
   }
 
-  await ensureDatabase(env.DB);
+  await ensureDatabase(
+    env.DB
+  );
 
   let body;
 
   try {
-    body = await request.json();
+    body =
+      await request.json();
   } catch {
     return json({
       ok: false,
@@ -540,12 +730,15 @@ async function handleDeleteMemory(
     }, 500);
   }
 
-  await ensureDatabase(env.DB);
+  await ensureDatabase(
+    env.DB
+  );
 
   let body;
 
   try {
-    body = await request.json();
+    body =
+      await request.json();
   } catch {
     return json({
       ok: false,
@@ -559,9 +752,14 @@ async function handleDeleteMemory(
     ).trim();
 
   const memoryId =
-    Number(body.memory_id);
+    Number(
+      body.memory_id
+    );
 
-  if (!userId || !memoryId) {
+  if (
+    !userId ||
+    !memoryId
+  ) {
     return json({
       ok: false,
       error:
@@ -592,12 +790,15 @@ async function handleSaveMemory(
     }, 500);
   }
 
-  await ensureDatabase(env.DB);
+  await ensureDatabase(
+    env.DB
+  );
 
   let body;
 
   try {
-    body = await request.json();
+    body =
+      await request.json();
   } catch {
     return json({
       ok: false,
@@ -615,7 +816,10 @@ async function handleSaveMemory(
       body.memory || ""
     ).trim();
 
-  if (!userId || !memory) {
+  if (
+    !userId ||
+    !memory
+  ) {
     return json({
       ok: false,
       error:
@@ -667,8 +871,17 @@ export default {
           ok: true,
           service: "Rafiq AI",
           status: "online",
+
+          /*
+            النموذج الأساسي الذي يبدأ به كل طلب.
+            قد ينتقل داخليًا إلى نموذج بديل
+            إذا كان الأساسي مشغولًا.
+          */
           model:
-            GEMINI_MODEL
+            GEMINI_MODELS[0],
+
+          fallback_models:
+            GEMINI_MODELS.slice(1)
         });
       }
 
