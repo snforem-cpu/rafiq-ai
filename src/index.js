@@ -28,6 +28,15 @@ const EXA_API_URL =
   "https://api.exa.ai/search";
 
 /* =========================
+   Firebase
+========================= */
+
+const FIREBASE_JWKS_URL =
+  "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com";
+
+const firebaseKeyCache = new Map();
+
+/* =========================
    Helpers
 ========================= */
 
@@ -43,6 +52,68 @@ function json(data, status = 200) {
 
 function nowISO() {
   return new Date().toISOString();
+}
+
+function base64UrlToBytes(value) {
+  const normalized =
+    String(value || "")
+      .replace(/-/g, "+")
+      .replace(/_/g, "/");
+
+  const padding =
+    "=".repeat(
+      (4 - normalized.length % 4) % 4
+    );
+
+  const binary =
+    atob(normalized + padding);
+
+  const bytes =
+    new Uint8Array(binary.length);
+
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] =
+      binary.charCodeAt(i);
+  }
+
+  return bytes;
+}
+
+function base64UrlDecode(value) {
+  return new TextDecoder().decode(
+    base64UrlToBytes(value)
+  );
+}
+
+function parseJwt(token) {
+  const parts =
+    String(token || "").split(".");
+
+  if (parts.length !== 3) {
+    return null;
+  }
+
+  try {
+    return {
+      header:
+        JSON.parse(
+          base64UrlDecode(parts[0])
+        ),
+
+      payload:
+        JSON.parse(
+          base64UrlDecode(parts[1])
+        ),
+
+      signingInput:
+        `${parts[0]}.${parts[1]}`,
+
+      signature:
+        base64UrlToBytes(parts[2])
+    };
+  } catch {
+    return null;
+  }
 }
 
 /* =========================
@@ -140,6 +211,39 @@ async function saveConversation(
       AND user_id = ?
   `).bind(
     now,
+    conversationId,
+    userId
+  ).run();
+}
+
+async function updateConversationTitle(
+  db,
+  conversationId,
+  userId,
+  message
+) {
+  const title =
+    String(message || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 60);
+
+  if (!title) {
+    return;
+  }
+
+  await db.prepare(`
+    UPDATE conversations
+    SET title = ?
+    WHERE id = ?
+      AND user_id = ?
+      AND (
+        title IS NULL
+        OR title = ''
+        OR title = 'محادثة جديدة'
+      )
+  `).bind(
+    title,
     conversationId,
     userId
   ).run();
@@ -316,137 +420,419 @@ async function deleteMemory(
   ).run();
 }
 
-/* =========================
-   Firebase
-   ========================= */
-
 /*
-  في المرحلة الحالية:
-  - إذا أرسلت الواجهة Firebase ID Token
-    نحاول التحقق منه.
-  - إذا لم ترسله الواجهة بعد، نستمر مؤقتًا
-    باستخدام user_id حتى لا يتعطل التطبيق
-    قبل تحديث Index.html.
-
-  لا يتم إرسال مفتاح Firebase أو أي سر
-  إلى الواجهة.
+  نحفظ فقط الذكريات التي يطلب المستخدم
+  حفظها بوضوح، وليس كل جملة عابرة.
 */
 
-function base64UrlDecode(value) {
-  const normalized =
-    value.replace(/-/g, "+").replace(/_/g, "/");
+function extractExplicitMemory(message) {
+  const text =
+    String(message || "").trim();
 
-  const padding =
-    "=".repeat(
-      (4 - normalized.length % 4) % 4
-    );
+  const patterns = [
+    /^تذكر أن\s+(.+)$/i,
+    /^تذكّر أن\s+(.+)$/i,
+    /^تذكر بأن\s+(.+)$/i,
+    /^تذكّر بأن\s+(.+)$/i,
+    /^احفظ أن\s+(.+)$/i,
+    /^احفظ بأن\s+(.+)$/i,
+    /^لا تنس أن\s+(.+)$/i,
+    /^لا تنسى أن\s+(.+)$/i,
+    /^remember that\s+(.+)$/i,
+    /^remember:\s*(.+)$/i
+  ];
 
-  const binary =
-    atob(normalized + padding);
+  for (const pattern of patterns) {
+    const match =
+      text.match(pattern);
 
-  const bytes =
-    Uint8Array.from(
-      binary,
-      char => char.charCodeAt(0)
-    );
-
-  return new TextDecoder().decode(bytes);
-}
-
-function decodeJwtPayload(token) {
-  const parts = String(token || "").split(".");
-
-  if (parts.length !== 3) {
-    return null;
+    if (match && match[1]) {
+      return match[1].trim();
+    }
   }
 
-  try {
-    return JSON.parse(
-      base64UrlDecode(parts[1])
-    );
-  } catch {
-    return null;
-  }
+  return null;
 }
 
-async function getFirebaseUserId(
-  request,
-  env,
-  fallbackUserId = ""
+/* =========================
+   Firebase Authentication
+========================= */
+
+/*
+  التحقق الكامل من Firebase ID Token:
+  1. Header alg = RS256
+  2. kid موجود
+  3. التحقق من التوقيع بالمفتاح العام
+  4. aud = Firebase project ID
+  5. iss = https://securetoken.google.com/<projectId>
+  6. exp / iat / auth_time
+  7. sub غير فارغ
+
+  مفاتيح Google العامة تأتي من JWKS
+  ويتم تخزينها مؤقتًا في ذاكرة Worker.
+*/
+
+async function getFirebasePublicKey(
+  kid
 ) {
-  const authorization =
-    request.headers.get("Authorization") || "";
+  if (!kid) {
+    throw new Error(
+      "Firebase token لا يحتوي على kid."
+    );
+  }
+
+  const cached =
+    firebaseKeyCache.get(kid);
 
   if (
-    authorization.startsWith("Bearer ")
+    cached &&
+    cached.expiresAt > Date.now()
   ) {
-    const token =
-      authorization.slice(7).trim();
+    return cached.key;
+  }
 
-    const payload =
-      decodeJwtPayload(token);
-
-    /*
-      التحقق الكامل من توقيع Firebase
-      يحتاج مفاتيح Google العامة.
-      نحاول التحقق من issuer/audience
-      أولًا، ثم نستخدم uid من token.
-
-      عند تفعيل Firebase في الواجهة،
-      سيكون هذا هو المسار الأساسي.
-    */
-
-    if (payload) {
-      const projectId =
-        String(
-          env.FIREBASE_PROJECT_ID || ""
-        ).trim();
-
-      const issuer =
-        `https://securetoken.google.com/${projectId}`;
-
-      const validIssuer =
-        !projectId ||
-        payload.iss === issuer;
-
-      const validAudience =
-        !projectId ||
-        payload.aud === projectId;
-
-      const notExpired =
-        !payload.exp ||
-        Number(payload.exp) * 1000 > Date.now();
-
-      if (
-        validIssuer &&
-        validAudience &&
-        notExpired &&
-        payload.user_id
-      ) {
-        return String(
-          payload.user_id
-        );
+  const response =
+    await fetch(
+      FIREBASE_JWKS_URL,
+      {
+        headers: {
+          "Accept":
+            "application/json"
+        }
       }
+    );
 
-      if (
-        validIssuer &&
-        validAudience &&
-        notExpired &&
-        payload.sub
-      ) {
-        return String(
-          payload.sub
+  if (!response.ok) {
+    throw new Error(
+      "تعذر الحصول على مفاتيح Firebase العامة."
+    );
+  }
+
+  const data =
+    await response.json();
+
+  const cacheControl =
+    response.headers.get(
+      "Cache-Control"
+    ) || "";
+
+  const maxAgeMatch =
+    cacheControl.match(
+      /max-age=(\d+)/
+    );
+
+  const maxAge =
+    maxAgeMatch
+      ? Number(maxAgeMatch[1])
+      : 3600;
+
+  const expiresAt =
+    Date.now() +
+    Math.max(
+      60,
+      Math.min(
+        maxAge,
+        86400
+      )
+    ) * 1000;
+
+  const keys =
+    Array.isArray(data?.keys)
+      ? data.keys
+      : [];
+
+  /*
+    إذا تغيرت المفاتيح، امسح
+    الكاش القديم ثم أعد التخزين.
+  */
+
+  firebaseKeyCache.clear();
+
+  for (const jwk of keys) {
+    if (
+      jwk?.kid &&
+      jwk?.kty === "RSA" &&
+      jwk?.alg === "RS256"
+    ) {
+      try {
+        const cryptoKey =
+          await crypto.subtle.importKey(
+            "jwk",
+            jwk,
+            {
+              name:
+                "RSASSA-PKCS1-v1_5",
+              hash:
+                "SHA-256"
+            },
+            false,
+            ["verify"]
+          );
+
+        firebaseKeyCache.set(
+          jwk.kid,
+          {
+            key:
+              cryptoKey,
+            expiresAt
+          }
+        );
+      } catch (error) {
+        console.error(
+          "Firebase key import failed:",
+          jwk.kid,
+          error
         );
       }
     }
   }
 
+  const result =
+    firebaseKeyCache.get(kid);
+
+  if (!result) {
+    throw new Error(
+      "مفتاح Firebase المطلوب غير موجود."
+    );
+  }
+
+  return result.key;
+}
+
+async function verifyFirebaseToken(
+  token,
+  env
+) {
+  const parsed =
+    parseJwt(token);
+
+  if (!parsed) {
+    throw new Error(
+      "Firebase ID Token غير صالح."
+    );
+  }
+
+  const {
+    header,
+    payload,
+    signingInput,
+    signature
+  } = parsed;
+
+  if (
+    header.alg !== "RS256"
+  ) {
+    throw new Error(
+      "خوارزمية Firebase Token غير صالحة."
+    );
+  }
+
+  if (!header.kid) {
+    throw new Error(
+      "Firebase Token لا يحتوي على kid."
+    );
+  }
+
+  const projectId =
+    String(
+      env.FIREBASE_PROJECT_ID || ""
+    ).trim();
+
+  if (!projectId) {
+    throw new Error(
+      "FIREBASE_PROJECT_ID غير موجود في Worker."
+    );
+  }
+
+  const issuer =
+    `https://securetoken.google.com/${projectId}`;
+
+  const now =
+    Math.floor(
+      Date.now() / 1000
+    );
+
+  const exp =
+    Number(payload.exp);
+
+  const iat =
+    Number(payload.iat);
+
+  const authTime =
+    Number(payload.auth_time);
+
+  if (
+    payload.aud !== projectId
+  ) {
+    throw new Error(
+      "Firebase Token لا ينتمي إلى المشروع الصحيح."
+    );
+  }
+
+  if (
+    payload.iss !== issuer
+  ) {
+    throw new Error(
+      "Firebase Token له issuer غير صحيح."
+    );
+  }
+
+  if (
+    !payload.sub ||
+    typeof payload.sub !== "string"
+  ) {
+    throw new Error(
+      "Firebase Token لا يحتوي على uid صالح."
+    );
+  }
+
+  if (
+    !Number.isFinite(exp) ||
+    exp <= now
+  ) {
+    throw new Error(
+      "Firebase Token منتهي الصلاحية."
+    );
+  }
+
+  if (
+    !Number.isFinite(iat) ||
+    iat > now + 60
+  ) {
+    throw new Error(
+      "وقت إصدار Firebase Token غير صالح."
+    );
+  }
+
+  if (
+    !Number.isFinite(authTime) ||
+    authTime > now + 60
+  ) {
+    throw new Error(
+      "وقت مصادقة Firebase Token غير صالح."
+    );
+  }
+
+  const key =
+    await getFirebasePublicKey(
+      header.kid
+    );
+
+  const valid =
+    await crypto.subtle.verify(
+      {
+        name:
+          "RSASSA-PKCS1-v1_5"
+      },
+      key,
+      signature,
+      new TextEncoder().encode(
+        signingInput
+      )
+    );
+
+  if (!valid) {
+    throw new Error(
+      "توقيع Firebase Token غير صالح."
+    );
+  }
+
+  return {
+    uid:
+      String(payload.sub),
+
+    email:
+      payload.email
+        ? String(payload.email)
+        : "",
+
+    emailVerified:
+      Boolean(payload.email_verified),
+
+    payload
+  };
+}
+
+/*
+  يدعم Authorization: Bearer TOKEN
+  ويدعم firebase_token داخل JSON.
+
+  السبب: الواجهة الحالية تمر عبر
+  Google Apps Script، وCode.gs الحالي
+  لا يمرر Authorization header.
+*/
+
+async function getFirebaseUser(
+  request,
+  env,
+  body = {}
+) {
+  const authorization =
+    request.headers.get(
+      "Authorization"
+    ) || "";
+
+  let token = "";
+
+  if (
+    authorization.startsWith(
+      "Bearer "
+    )
+  ) {
+    token =
+      authorization
+        .slice(7)
+        .trim();
+  }
+
+  if (!token && body.firebase_token) {
+    token =
+      String(
+        body.firebase_token
+      ).trim();
+  }
+
+  if (!token) {
+    return null;
+  }
+
+  return await verifyFirebaseToken(
+    token,
+    env
+  );
+}
+
+/*
+  توافق مؤقت مع الواجهة القديمة.
+  بمجرد انتقال Index.html النهائي إلى
+  Firebase Token، لن تعتمد الواجهة على
+  user_id لتحديد الهوية.
+*/
+
+async function getFirebaseUserId(
+  request,
+  env,
+  body = {}
+) {
+  const firebaseUser =
+    await getFirebaseUser(
+      request,
+      env,
+      body
+    );
+
+  if (firebaseUser) {
+    return firebaseUser.uid;
+  }
+
   /*
-    توافق مؤقت مع الواجهة الحالية.
+    هذه فقط للحفاظ على عمل النسخة
+    الحالية أثناء الانتقال إلى الواجهة
+    النهائية.
   */
 
   return String(
-    fallbackUserId || ""
+    body.user_id || ""
   ).trim();
 }
 
@@ -456,12 +842,14 @@ async function getFirebaseUserId(
 
 function shouldSearchWeb(message) {
   const text =
-    String(message || "").toLowerCase();
+    String(message || "")
+      .toLowerCase();
 
   const patterns = [
     "اليوم",
     "الآن",
     "حاليًا",
+    "حاليا",
     "اخر",
     "آخر",
     "أحدث",
@@ -495,7 +883,8 @@ function shouldSearchWeb(message) {
   ];
 
   return patterns.some(
-    pattern => text.includes(pattern)
+    pattern =>
+      text.includes(pattern)
   );
 }
 
@@ -514,20 +903,25 @@ async function searchExa(
         method: "POST",
 
         headers: {
-          "Content-Type": "application/json",
-          "x-api-key": env.EXA_API_KEY
+          "Content-Type":
+            "application/json",
+
+          "x-api-key":
+            env.EXA_API_KEY
         },
 
-        body: JSON.stringify({
-          query,
-          type: "auto",
-          numResults: 5,
-          contents: {
-            highlights: {
-              maxCharacters: 1200
+        body:
+          JSON.stringify({
+            query,
+            type: "auto",
+            numResults: 5,
+
+            contents: {
+              highlights: {
+                maxCharacters: 1200
+              }
             }
-          }
-        })
+          })
       }
     );
 
@@ -565,11 +959,15 @@ async function searchExa(
         item.publishedDate || "",
 
       highlights:
-        Array.isArray(item.highlights)
+        Array.isArray(
+          item.highlights
+        )
           ? item.highlights
           : []
     }))
-    .filter(item => item.url);
+    .filter(
+      item => item.url
+    );
 }
 
 /* =========================
@@ -638,13 +1036,14 @@ function buildSystemInstruction(
 - إذا لم تعرف شيئًا، قل ذلك بوضوح.
 - لا تكرر إجابة المستخدم بلا فائدة.
 - تعامل مع المعلومات المحفوظة عن المستخدم كسياق مساعد، وليس كحقيقة مطلقة إذا تعارضت مع كلامه الحالي.
+- لا تدّعِ أنك نفذت إجراءً خارجيًا إذا لم ينفذه النظام فعليًا.
 
 البحث على الويب:
 - إذا كانت نتائج البحث مرفقة، استخدمها للمعلومات الحديثة.
 - لا تخترع مصادر أو روابط.
-- عند استخدام نتائج البحث، اذكر المصادر بوضوح في الإجابة.
+- عند استخدام نتائج البحث، اذكر المصادر بوضوح.
 - ميّز بين المعلومات المؤكدة والاستنتاج.
-- لا تعتبر نتيجة بحث واحدة حقيقة مطلقة إذا كانت المعلومات متعارضة.
+- إذا كانت المصادر متعارضة، وضح ذلك بدل اختراع إجابة.
 
 المعلومات المحفوظة عن المستخدم:
 ${memoryText}
@@ -686,7 +1085,9 @@ async function callGeminiModel(
         method: "POST",
 
         headers: {
-          "Content-Type": "application/json",
+          "Content-Type":
+            "application/json",
+
           "x-goog-api-key":
             env.GEMINI_API_KEY
         },
@@ -708,9 +1109,6 @@ async function callGeminiModel(
     error.status =
       response.status;
 
-    error.raw =
-      raw;
-
     throw error;
   }
 
@@ -720,33 +1118,23 @@ async function callGeminiModel(
     data =
       JSON.parse(raw);
   } catch {
-    const error =
-      new Error(
-        "Gemini أعاد استجابة غير صالحة."
-      );
-
-    error.status =
-      response.status;
-
-    throw error;
+    throw new Error(
+      "Gemini أعاد استجابة غير صالحة."
+    );
   }
 
   const reply =
     data?.candidates?.[0]?.content?.parts
-      ?.map(part => part.text || "")
+      ?.map(
+        part => part.text || ""
+      )
       .join("")
       .trim();
 
   if (!reply) {
-    const error =
-      new Error(
-        "Gemini لم يُرجع نصًا."
-      );
-
-    error.status =
-      response.status;
-
-    throw error;
+    throw new Error(
+      "Gemini لم يُرجع نصًا."
+    );
   }
 
   return reply;
@@ -776,7 +1164,8 @@ async function callGemini(
 
       parts: [
         {
-          text: item.content
+          text:
+            item.content
         }
       ]
     });
@@ -787,7 +1176,8 @@ async function callGemini(
 
     parts: [
       {
-        text: userMessage
+        text:
+          userMessage
       }
     ]
   });
@@ -862,13 +1252,6 @@ async function callGemini(
       ) {
         throw error;
       }
-
-      if (
-        i ===
-        GEMINI_MODELS.length - 1
-      ) {
-        break;
-      }
     }
   }
 
@@ -904,16 +1287,11 @@ async function handleChat(
     env.DB
   );
 
-  const requestedUserId =
-    String(
-      body.user_id || ""
-    ).trim();
-
   const userId =
     await getFirebaseUserId(
       request,
       env,
-      requestedUserId
+      body
     );
 
   const conversationId =
@@ -968,12 +1346,36 @@ async function handleChat(
       userId
     );
 
-  let webResults = [];
-
   /*
-    البحث يتم تلقائيًا فقط عندما يبدو
-    أن السؤال يحتاج معلومات حديثة.
+    إذا طلب المستخدم صراحة حفظ معلومة،
+    نحفظها تلقائيًا.
   */
+
+  const explicitMemory =
+    extractExplicitMemory(
+      message
+    );
+
+  if (explicitMemory) {
+    try {
+      await saveMemory(
+        env.DB,
+        userId,
+        explicitMemory,
+        "general",
+        4,
+        "conversation",
+        1
+      );
+    } catch (error) {
+      console.error(
+        "Automatic memory save failed:",
+        error
+      );
+    }
+  }
+
+  let webResults = [];
 
   if (
     shouldSearchWeb(message) &&
@@ -990,8 +1392,6 @@ async function handleChat(
         "Exa search failed:",
         error
       );
-
-      webResults = [];
     }
   }
 
@@ -1000,6 +1400,13 @@ async function handleChat(
     conversationId,
     userId,
     "user",
+    message
+  );
+
+  await updateConversationTitle(
+    env.DB,
+    conversationId,
+    userId,
     message
   );
 
@@ -1014,7 +1421,6 @@ async function handleChat(
         message,
         webResults
       );
-
   } catch (error) {
     console.error(
       "Gemini error:",
@@ -1039,9 +1445,7 @@ async function handleChat(
 
   return json({
     ok: true,
-
     reply,
-
     conversation_id:
       conversationId,
 
@@ -1084,9 +1488,7 @@ async function handleGetMemories(
     await getFirebaseUserId(
       request,
       env,
-      String(
-        body.user_id || ""
-      ).trim()
+      body
     );
 
   if (!userId) {
@@ -1130,14 +1532,14 @@ async function handleSaveMemory(
     await getFirebaseUserId(
       request,
       env,
-      String(
-        body.user_id || ""
-      ).trim()
+      body
     );
 
   const memory =
     String(
-      body.memory || body.content || ""
+      body.memory ||
+      body.content ||
+      ""
     ).trim();
 
   if (!userId || !memory) {
@@ -1157,10 +1559,14 @@ async function handleSaveMemory(
     env.DB,
     userId,
     memory,
-    body.category || "general",
-    body.importance || 3,
-    body.source || "user",
-    body.confirmed || 0
+    body.category ||
+      "general",
+    body.importance ||
+      3,
+    body.source ||
+      "user",
+    body.confirmed ||
+      0
   );
 
   return json({
@@ -1189,9 +1595,7 @@ async function handleDeleteMemory(
     await getFirebaseUserId(
       request,
       env,
-      String(
-        body.user_id || ""
-      ).trim()
+      body
     );
 
   const memoryId =
@@ -1206,7 +1610,7 @@ async function handleDeleteMemory(
     return json({
       ok: false,
       error:
-        "user_id و memory_id مطلوبان."
+        "memory_id مطلوب."
     }, 400);
   }
 
@@ -1246,9 +1650,7 @@ async function handleGetConversations(
     await getFirebaseUserId(
       request,
       env,
-      String(
-        body.user_id || ""
-      ).trim()
+      body
     );
 
   if (!userId) {
@@ -1292,14 +1694,13 @@ async function handleDeleteConversation(
     await getFirebaseUserId(
       request,
       env,
-      String(
-        body.user_id || ""
-      ).trim()
+      body
     );
 
   const conversationId =
     String(
-      body.conversation_id || ""
+      body.conversation_id ||
+      ""
     ).trim();
 
   if (
@@ -1357,7 +1758,9 @@ async function createReminder(
 
   const recurrence =
     data.recurrence
-      ? String(data.recurrence)
+      ? String(
+          data.recurrence
+        )
       : null;
 
   if (
@@ -1366,6 +1769,19 @@ async function createReminder(
   ) {
     throw new Error(
       "نص التذكير وموعده مطلوبان."
+    );
+  }
+
+  const dueDate =
+    new Date(dueAt);
+
+  if (
+    Number.isNaN(
+      dueDate.getTime()
+    )
+  ) {
+    throw new Error(
+      "موعد التذكير غير صالح."
     );
   }
 
@@ -1386,7 +1802,7 @@ async function createReminder(
     id,
     userId,
     text,
-    dueAt,
+    dueDate.toISOString(),
     timezone,
     recurrence,
     nowISO()
@@ -1419,20 +1835,183 @@ async function getReminders(
   return result.results || [];
 }
 
+async function getDueReminders(
+  db,
+  userId
+) {
+  const result =
+    await db.prepare(`
+      SELECT id,
+             text,
+             due_at,
+             timezone,
+             recurrence,
+             completed,
+             created_at
+      FROM reminders
+      WHERE user_id = ?
+        AND completed = 0
+        AND due_at <= ?
+      ORDER BY due_at ASC
+      LIMIT 50
+    `).bind(
+      userId,
+      nowISO()
+    ).all();
+
+  return result.results || [];
+}
+
+function getNextReminderDate(
+  currentDueAt,
+  recurrence
+) {
+  const current =
+    new Date(
+      currentDueAt
+    );
+
+  if (
+    Number.isNaN(
+      current.getTime()
+    )
+  ) {
+    return null;
+  }
+
+  const value =
+    String(
+      recurrence || ""
+    )
+      .trim()
+      .toLowerCase();
+
+  /*
+    قبول عدة صيغ حتى تكون الواجهة
+    مرنة.
+  */
+
+  if (
+    value === "daily" ||
+    value === "يومي" ||
+    value === "كل يوم"
+  ) {
+    current.setUTCDate(
+      current.getUTCDate() + 1
+    );
+
+    return current.toISOString();
+  }
+
+  if (
+    value === "weekly" ||
+    value === "weekly" ||
+    value === "أسبوعي" ||
+    value === "كل أسبوع"
+  ) {
+    current.setUTCDate(
+      current.getUTCDate() + 7
+    );
+
+    return current.toISOString();
+  }
+
+  if (
+    value === "monthly" ||
+    value === "شهري" ||
+    value === "كل شهر"
+  ) {
+    current.setUTCMonth(
+      current.getUTCMonth() + 1
+    );
+
+    return current.toISOString();
+  }
+
+  /*
+    recurrence يمكن أن يكون JSON:
+    {"type":"daily"}
+    {"type":"weekly"}
+    {"type":"monthly"}
+  */
+
+  try {
+    const parsed =
+      JSON.parse(
+        value
+      );
+
+    if (
+      parsed &&
+      parsed.type
+    ) {
+      return getNextReminderDate(
+        currentDueAt,
+        parsed.type
+      );
+    }
+  } catch {
+    // ليس JSON، نكمل.
+  }
+
+  return null;
+}
+
 async function completeReminder(
   db,
   userId,
   reminderId
 ) {
-  await db.prepare(`
-    UPDATE reminders
-    SET completed = 1
-    WHERE id = ?
-      AND user_id = ?
-  `).bind(
-    reminderId,
-    userId
-  ).run();
+  const result =
+    await db.prepare(`
+      SELECT id,
+             due_at,
+             recurrence
+      FROM reminders
+      WHERE id = ?
+        AND user_id = ?
+        AND completed = 0
+      LIMIT 1
+    `).bind(
+      reminderId,
+      userId
+    ).first();
+
+  if (!result) {
+    return;
+  }
+
+  const nextDue =
+    result.recurrence
+      ? getNextReminderDate(
+          result.due_at,
+          result.recurrence
+        )
+      : null;
+
+  if (nextDue) {
+    await db.prepare(`
+      UPDATE reminders
+      SET due_at = ?,
+          completed = 0
+      WHERE id = ?
+        AND user_id = ?
+    `).bind(
+      nextDue,
+      reminderId,
+      userId
+    ).run();
+  } else {
+    await db.prepare(`
+      UPDATE reminders
+      SET completed = 1
+      WHERE id = ?
+        AND user_id = ?
+    `).bind(
+      reminderId,
+      userId
+    ).run();
+  }
 }
 
 async function deleteReminder(
@@ -1471,9 +2050,7 @@ async function handleReminderAction(
     await getFirebaseUserId(
       request,
       env,
-      String(
-        body.user_id || ""
-      ).trim()
+      body
     );
 
   if (!userId) {
@@ -1486,12 +2063,12 @@ async function handleReminderAction(
 
   const action =
     String(
-      body.reminder_action || ""
+      body.reminder_action ||
+      ""
     ).trim();
 
   if (
-    action ===
-    "create"
+    action === "create"
   ) {
     const id =
       await createReminder(
@@ -1507,8 +2084,7 @@ async function handleReminderAction(
   }
 
   if (
-    action ===
-    "list"
+    action === "list"
   ) {
     const reminders =
       await getReminders(
@@ -1523,13 +2099,29 @@ async function handleReminderAction(
   }
 
   if (
-    action ===
-    "complete"
+    action === "due"
+  ) {
+    const reminders =
+      await getDueReminders(
+        env.DB,
+        userId
+      );
+
+    return json({
+      ok: true,
+      reminders
+    });
+  }
+
+  if (
+    action === "complete"
   ) {
     await completeReminder(
       env.DB,
       userId,
-      String(body.reminder_id)
+      String(
+        body.reminder_id
+      )
     );
 
     return json({
@@ -1538,13 +2130,14 @@ async function handleReminderAction(
   }
 
   if (
-    action ===
-    "delete"
+    action === "delete"
   ) {
     await deleteReminder(
       env.DB,
       userId,
-      String(body.reminder_id)
+      String(
+        body.reminder_id
+      )
     );
 
     return json({
@@ -1578,9 +2171,6 @@ async function processReminders(
     env.DB
   );
 
-  const now =
-    nowISO();
-
   const result =
     await env.DB.prepare(`
       SELECT id,
@@ -1596,19 +2186,19 @@ async function processReminders(
       ORDER BY due_at ASC
       LIMIT 100
     `).bind(
-      now
+      nowISO()
     ).all();
 
   const reminders =
     result.results || [];
 
   /*
-    لا نرسل Push Notification من Worker
-    في هذه المرحلة.
+    Cron لا يغلق التذكير هنا.
+    لأن إغلاقه قبل أن تعرضه الواجهة
+    سيجعل الإشعار داخل التطبيق يضيع.
 
-    نسجل أن التذكير أصبح مستحقًا.
-    الواجهة ستقرأ التذكيرات المستحقة
-    عند فتح التطبيق/مراجعته.
+    الواجهة تستدعي action=due،
+    تعرض الإشعار، ثم تستدعي complete.
   */
 
   for (const reminder of reminders) {
@@ -1616,27 +2206,9 @@ async function processReminders(
       "Reminder due:",
       reminder.id,
       reminder.user_id,
-      reminder.text
+      reminder.text,
+      reminder.due_at
     );
-
-    /*
-      التذكير المتكرر:
-      لا نغيّر الموعد هنا حتى يتم تنفيذ
-      منطق التكرار في النسخة النهائية
-      للواجهة/الخلفية.
-
-      التذكير العادي يصبح مكتملًا.
-    */
-
-    if (!reminder.recurrence) {
-      await env.DB.prepare(`
-        UPDATE reminders
-        SET completed = 1
-        WHERE id = ?
-      `).bind(
-        reminder.id
-      ).run();
-    }
   }
 }
 
@@ -1683,14 +2255,21 @@ export default {
             chat: true,
             memories: true,
             conversations: true,
-            web_search: Boolean(
-              env.EXA_API_KEY
-            ),
+
+            web_search:
+              Boolean(
+                env.EXA_API_KEY
+              ),
+
             reminders: true,
+
             firebase:
               Boolean(
                 env.FIREBASE_PROJECT_ID
-              )
+              ),
+
+            firebase_signature_verification:
+              true
           }
         });
       }
