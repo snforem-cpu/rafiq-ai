@@ -1,21 +1,13 @@
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "https://snforem-cpu.github.io",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
   "Access-Control-Max-Age": "86400"
 };
 
-/*
-  ترتيب النماذج من الأقوى إلى الأقل:
-  1. Gemini 3.8 Flash
-  2. Gemini 3.7 Flash
-  3. Gemini 3.6 Flash
-  4. Gemini 3.5 Flash
-  5. Gemini 3.5 Flash-Lite
-
-  يبدأ كل طلب دائمًا من النموذج الأول.
-  إذا حدث خطأ مؤقت/ازدحام، ينتقل تلقائيًا للنموذج التالي.
-*/
+/* =========================
+   Gemini
+========================= */
 
 const GEMINI_MODELS = [
   "gemini-3.8-flash",
@@ -28,6 +20,17 @@ const GEMINI_MODELS = [
 const GEMINI_API_BASE =
   "https://generativelanguage.googleapis.com/v1beta/models";
 
+/* =========================
+   Exa
+========================= */
+
+const EXA_API_URL =
+  "https://api.exa.ai/search";
+
+/* =========================
+   Helpers
+========================= */
+
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -37,6 +40,14 @@ function json(data, status = 200) {
     }
   });
 }
+
+function nowISO() {
+  return new Date().toISOString();
+}
+
+/* =========================
+   Database
+========================= */
 
 async function ensureDatabase(db) {
   await db.batch([
@@ -66,26 +77,49 @@ async function ensureDatabase(db) {
         content TEXT NOT NULL,
         created_at TEXT NOT NULL
       )
+    `),
+
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS reminders (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        text TEXT NOT NULL,
+        due_at TEXT NOT NULL,
+        timezone TEXT NOT NULL DEFAULT 'UTC',
+        recurrence TEXT,
+        completed INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+      )
     `)
   ]);
 }
 
+/* =========================
+   Users
+========================= */
+
 async function saveUser(db, userId) {
   await db.prepare(`
-    INSERT OR IGNORE INTO users (id, created_at)
+    INSERT OR IGNORE INTO users
+    (id, created_at)
     VALUES (?, ?)
   `).bind(
     userId,
-    new Date().toISOString()
+    nowISO()
   ).run();
 }
+
+/* =========================
+   Conversations
+========================= */
 
 async function saveConversation(
   db,
   conversationId,
-  userId
+  userId,
+  title = "محادثة جديدة"
 ) {
-  const now = new Date().toISOString();
+  const now = nowISO();
 
   await db.prepare(`
     INSERT OR IGNORE INTO conversations
@@ -94,7 +128,7 @@ async function saveConversation(
   `).bind(
     conversationId,
     userId,
-    "محادثة جديدة",
+    title,
     now,
     now
   ).run();
@@ -103,10 +137,55 @@ async function saveConversation(
     UPDATE conversations
     SET updated_at = ?
     WHERE id = ?
+      AND user_id = ?
   `).bind(
     now,
-    conversationId
+    conversationId,
+    userId
   ).run();
+}
+
+async function listConversations(
+  db,
+  userId
+) {
+  const result = await db.prepare(`
+    SELECT id, title, created_at, updated_at
+    FROM conversations
+    WHERE user_id = ?
+    ORDER BY updated_at DESC
+    LIMIT 100
+  `).bind(
+    userId
+  ).all();
+
+  return result.results || [];
+}
+
+async function deleteConversation(
+  db,
+  userId,
+  conversationId
+) {
+  await db.batch([
+    db.prepare(`
+      DELETE FROM messages
+      WHERE conversation_id = ?
+        AND user_id = ?
+    `).bind(
+      conversationId,
+      userId
+    ),
+
+    db.prepare(`
+      DELETE FROM conversations
+      WHERE id = ?
+        AND user_id = ?
+    `).bind(
+      conversationId,
+      userId
+    )
+  ]);
 }
 
 async function saveMessage(
@@ -125,51 +204,49 @@ async function saveMessage(
     userId,
     role,
     content,
-    new Date().toISOString()
+    nowISO()
   ).run();
 }
 
 async function getConversationHistory(
   db,
   conversationId,
+  userId,
   limit = 30
 ) {
   const result = await db.prepare(`
     SELECT role, content
     FROM messages
     WHERE conversation_id = ?
+      AND user_id = ?
     ORDER BY id DESC
     LIMIT ?
   `).bind(
     conversationId,
+    userId,
     limit
   ).all();
 
   return (result.results || []).reverse();
 }
 
-/*
-  جدول memories الموجود أصلًا في D1 يحتوي على:
-  id
-  user_id
-  category
-  content
-  importance
-  source
-  confirmed
-  active
-  created_at
-
-  لذلك نستخدم content بدل memory.
-*/
+/* =========================
+   Memories
+========================= */
 
 async function getUserMemories(
   db,
   userId
 ) {
   const result = await db.prepare(`
-    SELECT id, category, content, importance, source,
-           confirmed, active, created_at
+    SELECT id,
+           category,
+           content,
+           importance,
+           source,
+           confirmed,
+           active,
+           created_at
     FROM memories
     WHERE user_id = ?
       AND active = 1
@@ -185,7 +262,11 @@ async function getUserMemories(
 async function saveMemory(
   db,
   userId,
-  memory
+  memory,
+  category = "general",
+  importance = 3,
+  source = "conversation",
+  confirmed = 0
 ) {
   const clean =
     String(memory || "").trim();
@@ -209,13 +290,13 @@ async function saveMemory(
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
     userId,
-    "general",
+    category,
     clean,
-    3,
-    "conversation",
-    0,
+    Number(importance) || 3,
+    source,
+    confirmed ? 1 : 0,
     1,
-    new Date().toISOString()
+    nowISO()
   ).run();
 }
 
@@ -224,38 +305,319 @@ async function deleteMemory(
   userId,
   memoryId
 ) {
-  /*
-    لا نحذف سجل الذاكرة نهائيًا.
-    نجعله غير نشط للحفاظ على البيانات.
-  */
-
   await db.prepare(`
     UPDATE memories
     SET active = 0
-    WHERE id = ? AND user_id = ?
+    WHERE id = ?
+      AND user_id = ?
   `).bind(
     Number(memoryId),
     userId
   ).run();
 }
 
+/* =========================
+   Firebase
+   ========================= */
+
+/*
+  في المرحلة الحالية:
+  - إذا أرسلت الواجهة Firebase ID Token
+    نحاول التحقق منه.
+  - إذا لم ترسله الواجهة بعد، نستمر مؤقتًا
+    باستخدام user_id حتى لا يتعطل التطبيق
+    قبل تحديث Index.html.
+
+  لا يتم إرسال مفتاح Firebase أو أي سر
+  إلى الواجهة.
+*/
+
+function base64UrlDecode(value) {
+  const normalized =
+    value.replace(/-/g, "+").replace(/_/g, "/");
+
+  const padding =
+    "=".repeat(
+      (4 - normalized.length % 4) % 4
+    );
+
+  const binary =
+    atob(normalized + padding);
+
+  const bytes =
+    Uint8Array.from(
+      binary,
+      char => char.charCodeAt(0)
+    );
+
+  return new TextDecoder().decode(bytes);
+}
+
+function decodeJwtPayload(token) {
+  const parts = String(token || "").split(".");
+
+  if (parts.length !== 3) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(
+      base64UrlDecode(parts[1])
+    );
+  } catch {
+    return null;
+  }
+}
+
+async function getFirebaseUserId(
+  request,
+  env,
+  fallbackUserId = ""
+) {
+  const authorization =
+    request.headers.get("Authorization") || "";
+
+  if (
+    authorization.startsWith("Bearer ")
+  ) {
+    const token =
+      authorization.slice(7).trim();
+
+    const payload =
+      decodeJwtPayload(token);
+
+    /*
+      التحقق الكامل من توقيع Firebase
+      يحتاج مفاتيح Google العامة.
+      نحاول التحقق من issuer/audience
+      أولًا، ثم نستخدم uid من token.
+
+      عند تفعيل Firebase في الواجهة،
+      سيكون هذا هو المسار الأساسي.
+    */
+
+    if (payload) {
+      const projectId =
+        String(
+          env.FIREBASE_PROJECT_ID || ""
+        ).trim();
+
+      const issuer =
+        `https://securetoken.google.com/${projectId}`;
+
+      const validIssuer =
+        !projectId ||
+        payload.iss === issuer;
+
+      const validAudience =
+        !projectId ||
+        payload.aud === projectId;
+
+      const notExpired =
+        !payload.exp ||
+        Number(payload.exp) * 1000 > Date.now();
+
+      if (
+        validIssuer &&
+        validAudience &&
+        notExpired &&
+        payload.user_id
+      ) {
+        return String(
+          payload.user_id
+        );
+      }
+
+      if (
+        validIssuer &&
+        validAudience &&
+        notExpired &&
+        payload.sub
+      ) {
+        return String(
+          payload.sub
+        );
+      }
+    }
+  }
+
+  /*
+    توافق مؤقت مع الواجهة الحالية.
+  */
+
+  return String(
+    fallbackUserId || ""
+  ).trim();
+}
+
+/* =========================
+   Web Search - Exa
+========================= */
+
+function shouldSearchWeb(message) {
+  const text =
+    String(message || "").toLowerCase();
+
+  const patterns = [
+    "اليوم",
+    "الآن",
+    "حاليًا",
+    "اخر",
+    "آخر",
+    "أحدث",
+    "حديث",
+    "خبر",
+    "أخبار",
+    "سعر",
+    "أسعار",
+    "موعد",
+    "متى",
+    "طقس",
+    "الطقس",
+    "نتيجة",
+    "نتائج",
+    "2026",
+    "2025",
+    "today",
+    "now",
+    "latest",
+    "current",
+    "recent",
+    "news",
+    "price",
+    "prices",
+    "weather",
+    "score",
+    "scores",
+    "when",
+    "who is",
+    "what happened"
+  ];
+
+  return patterns.some(
+    pattern => text.includes(pattern)
+  );
+}
+
+async function searchExa(
+  env,
+  query
+) {
+  if (!env.EXA_API_KEY) {
+    return [];
+  }
+
+  const response =
+    await fetch(
+      EXA_API_URL,
+      {
+        method: "POST",
+
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": env.EXA_API_KEY
+        },
+
+        body: JSON.stringify({
+          query,
+          type: "auto",
+          numResults: 5,
+          contents: {
+            highlights: {
+              maxCharacters: 1200
+            }
+          }
+        })
+      }
+    );
+
+  const raw =
+    await response.text();
+
+  if (!response.ok) {
+    console.error(
+      "Exa error:",
+      response.status,
+      raw
+    );
+
+    return [];
+  }
+
+  let data;
+
+  try {
+    data =
+      JSON.parse(raw);
+  } catch {
+    return [];
+  }
+
+  return (data.results || [])
+    .map(item => ({
+      title:
+        item.title || "",
+
+      url:
+        item.url || "",
+
+      publishedDate:
+        item.publishedDate || "",
+
+      highlights:
+        Array.isArray(item.highlights)
+          ? item.highlights
+          : []
+    }))
+    .filter(item => item.url);
+}
+
+/* =========================
+   System Instruction
+========================= */
+
 function buildSystemInstruction(
-  memories
+  memories,
+  webResults = []
 ) {
   let memoryText =
     "لا توجد معلومات محفوظة عن المستخدم حتى الآن.";
 
   if (memories.length > 0) {
-    memoryText = memories
-      .map(item => {
-        const category =
-          item.category
-            ? ` [${item.category}]`
-            : "";
+    memoryText =
+      memories
+        .map(item => {
+          const category =
+            item.category
+              ? ` [${item.category}]`
+              : "";
 
-        return `- ${item.content}${category}`;
-      })
-      .join("\n");
+          return `- ${item.content}${category}`;
+        })
+        .join("\n");
+  }
+
+  let webText =
+    "لم يتم إجراء بحث ويب لهذا الطلب.";
+
+  if (webResults.length > 0) {
+    webText =
+      webResults
+        .map((item, index) => {
+          const highlights =
+            item.highlights.length
+              ? item.highlights.join(" ")
+              : "";
+
+          return `
+[${index + 1}]
+العنوان: ${item.title}
+الرابط: ${item.url}
+التاريخ: ${item.publishedDate || "غير متوفر"}
+المقتطف: ${highlights}
+`;
+        })
+        .join("\n");
   }
 
   return `
@@ -277,20 +639,24 @@ function buildSystemInstruction(
 - لا تكرر إجابة المستخدم بلا فائدة.
 - تعامل مع المعلومات المحفوظة عن المستخدم كسياق مساعد، وليس كحقيقة مطلقة إذا تعارضت مع كلامه الحالي.
 
+البحث على الويب:
+- إذا كانت نتائج البحث مرفقة، استخدمها للمعلومات الحديثة.
+- لا تخترع مصادر أو روابط.
+- عند استخدام نتائج البحث، اذكر المصادر بوضوح في الإجابة.
+- ميّز بين المعلومات المؤكدة والاستنتاج.
+- لا تعتبر نتيجة بحث واحدة حقيقة مطلقة إذا كانت المعلومات متعارضة.
+
 المعلومات المحفوظة عن المستخدم:
 ${memoryText}
+
+نتائج البحث الحالية:
+${webText}
 `;
 }
 
-/*
-  نعتبر هذه الأخطاء مؤقتة أو مرتبطة بالضغط/التوافر.
-  عند حدوثها ينتقل رفيق للنموذج التالي.
-
-  لا ننتقل عند أخطاء مثل:
-  400 = طلب غير صحيح
-  401/403 = مشكلة صلاحية أو مفتاح
-  404 = نموذج/مسار غير موجود
-*/
+/* =========================
+   Gemini
+========================= */
 
 function isRetryableGeminiStatus(
   status
@@ -313,20 +679,22 @@ async function callGeminiModel(
   const url =
     `${GEMINI_API_BASE}/${model}:generateContent`;
 
-  const response = await fetch(
-    url,
-    {
-      method: "POST",
+  const response =
+    await fetch(
+      url,
+      {
+        method: "POST",
 
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key":
-          env.GEMINI_API_KEY
-      },
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key":
+            env.GEMINI_API_KEY
+        },
 
-      body: JSON.stringify(payload)
-    }
-  );
+        body:
+          JSON.stringify(payload)
+      }
+    );
 
   const raw =
     await response.text();
@@ -388,7 +756,8 @@ async function callGemini(
   env,
   history,
   memories,
-  userMessage
+  userMessage,
+  webResults = []
 ) {
   if (!env.GEMINI_API_KEY) {
     throw new Error(
@@ -429,7 +798,8 @@ async function callGemini(
         {
           text:
             buildSystemInstruction(
-              memories
+              memories,
+              webResults
             )
         }
       ]
@@ -444,11 +814,6 @@ async function callGemini(
   };
 
   let lastError = null;
-
-  /*
-    تجربة النماذج بالترتيب:
-    3.8 → 3.7 → 3.6 → 3.5 → 3.5-lite
-  */
 
   for (
     let i = 0;
@@ -490,14 +855,6 @@ async function callGemini(
         error
       );
 
-      /*
-        إذا كان الخطأ مؤقتًا،
-        ننتقل للنموذج التالي.
-
-        أما الخطأ غير القابل لإعادة المحاولة،
-        نتوقف فورًا.
-      */
-
       if (
         !isRetryableGeminiStatus(
           status
@@ -505,11 +862,6 @@ async function callGemini(
       ) {
         throw error;
       }
-
-      /*
-        إذا كان هذا آخر نموذج،
-        لا يوجد نموذج آخر للانتقال إليه.
-      */
 
       if (
         i ===
@@ -519,10 +871,6 @@ async function callGemini(
       }
     }
   }
-
-  /*
-    جميع النماذج فشلت بسبب أخطاء مؤقتة.
-  */
 
   if (lastError) {
     throw new Error(
@@ -535,9 +883,14 @@ async function callGemini(
   );
 }
 
+/* =========================
+   Chat
+========================= */
+
 async function handleChat(
   request,
-  env
+  env,
+  body
 ) {
   if (!env.DB) {
     return json({
@@ -551,22 +904,17 @@ async function handleChat(
     env.DB
   );
 
-  let body;
-
-  try {
-    body =
-      await request.json();
-  } catch {
-    return json({
-      ok: false,
-      error: "Invalid JSON body."
-    }, 400);
-  }
-
-  const userId =
+  const requestedUserId =
     String(
       body.user_id || ""
     ).trim();
+
+  const userId =
+    await getFirebaseUserId(
+      request,
+      env,
+      requestedUserId
+    );
 
   const conversationId =
     String(
@@ -582,14 +930,16 @@ async function handleChat(
   if (!userId) {
     return json({
       ok: false,
-      error: "user_id مطلوب."
-    }, 400);
+      error:
+        "تسجيل الدخول مطلوب."
+    }, 401);
   }
 
   if (!message) {
     return json({
       ok: false,
-      error: "message مطلوب."
+      error:
+        "message مطلوب."
     }, 400);
   }
 
@@ -608,6 +958,7 @@ async function handleChat(
     await getConversationHistory(
       env.DB,
       conversationId,
+      userId,
       30
     );
 
@@ -616,6 +967,33 @@ async function handleChat(
       env.DB,
       userId
     );
+
+  let webResults = [];
+
+  /*
+    البحث يتم تلقائيًا فقط عندما يبدو
+    أن السؤال يحتاج معلومات حديثة.
+  */
+
+  if (
+    shouldSearchWeb(message) &&
+    env.EXA_API_KEY
+  ) {
+    try {
+      webResults =
+        await searchExa(
+          env,
+          message
+        );
+    } catch (error) {
+      console.error(
+        "Exa search failed:",
+        error
+      );
+
+      webResults = [];
+    }
+  }
 
   await saveMessage(
     env.DB,
@@ -633,7 +1011,8 @@ async function handleChat(
         env,
         history,
         memories,
-        message
+        message,
+        webResults
       );
 
   } catch (error) {
@@ -660,15 +1039,34 @@ async function handleChat(
 
   return json({
     ok: true,
+
     reply,
+
     conversation_id:
-      conversationId
+      conversationId,
+
+    sources:
+      webResults.map(item => ({
+        title:
+          item.title,
+
+        url:
+          item.url,
+
+        publishedDate:
+          item.publishedDate
+      }))
   });
 }
 
-async function getMemories(
+/* =========================
+   Memories API
+========================= */
+
+async function handleGetMemories(
   request,
-  env
+  env,
+  body
 ) {
   if (!env.DB) {
     return json({
@@ -682,28 +1080,21 @@ async function getMemories(
     env.DB
   );
 
-  let body;
-
-  try {
-    body =
-      await request.json();
-  } catch {
-    return json({
-      ok: false,
-      error: "Invalid JSON body."
-    }, 400);
-  }
-
   const userId =
-    String(
-      body.user_id || ""
-    ).trim();
+    await getFirebaseUserId(
+      request,
+      env,
+      String(
+        body.user_id || ""
+      ).trim()
+    );
 
   if (!userId) {
     return json({
       ok: false,
-      error: "user_id مطلوب."
-    }, 400);
+      error:
+        "تسجيل الدخول مطلوب."
+    }, 401);
   }
 
   const memories =
@@ -718,9 +1109,10 @@ async function getMemories(
   });
 }
 
-async function handleDeleteMemory(
+async function handleSaveMemory(
   request,
-  env
+  env,
+  body
 ) {
   if (!env.DB) {
     return json({
@@ -734,22 +1126,73 @@ async function handleDeleteMemory(
     env.DB
   );
 
-  let body;
+  const userId =
+    await getFirebaseUserId(
+      request,
+      env,
+      String(
+        body.user_id || ""
+      ).trim()
+    );
 
-  try {
-    body =
-      await request.json();
-  } catch {
+  const memory =
+    String(
+      body.memory || body.content || ""
+    ).trim();
+
+  if (!userId || !memory) {
     return json({
       ok: false,
-      error: "Invalid JSON body."
+      error:
+        "المستخدم والذاكرة مطلوبان."
     }, 400);
   }
 
+  await saveUser(
+    env.DB,
+    userId
+  );
+
+  await saveMemory(
+    env.DB,
+    userId,
+    memory,
+    body.category || "general",
+    body.importance || 3,
+    body.source || "user",
+    body.confirmed || 0
+  );
+
+  return json({
+    ok: true
+  });
+}
+
+async function handleDeleteMemory(
+  request,
+  env,
+  body
+) {
+  if (!env.DB) {
+    return json({
+      ok: false,
+      error:
+        "D1 binding DB غير موجود."
+    }, 500);
+  }
+
+  await ensureDatabase(
+    env.DB
+  );
+
   const userId =
-    String(
-      body.user_id || ""
-    ).trim();
+    await getFirebaseUserId(
+      request,
+      env,
+      String(
+        body.user_id || ""
+      ).trim()
+    );
 
   const memoryId =
     Number(
@@ -778,9 +1221,14 @@ async function handleDeleteMemory(
   });
 }
 
-async function handleSaveMemory(
+/* =========================
+   Conversations API
+========================= */
+
+async function handleGetConversations(
   request,
-  env
+  env,
+  body
 ) {
   if (!env.DB) {
     return json({
@@ -794,54 +1242,407 @@ async function handleSaveMemory(
     env.DB
   );
 
-  let body;
+  const userId =
+    await getFirebaseUserId(
+      request,
+      env,
+      String(
+        body.user_id || ""
+      ).trim()
+    );
 
-  try {
-    body =
-      await request.json();
-  } catch {
+  if (!userId) {
     return json({
       ok: false,
-      error: "Invalid JSON body."
-    }, 400);
+      error:
+        "تسجيل الدخول مطلوب."
+    }, 401);
   }
 
-  const userId =
-    String(
-      body.user_id || ""
-    ).trim();
+  const conversations =
+    await listConversations(
+      env.DB,
+      userId
+    );
 
-  const memory =
+  return json({
+    ok: true,
+    conversations
+  });
+}
+
+async function handleDeleteConversation(
+  request,
+  env,
+  body
+) {
+  if (!env.DB) {
+    return json({
+      ok: false,
+      error:
+        "D1 binding DB غير موجود."
+    }, 500);
+  }
+
+  await ensureDatabase(
+    env.DB
+  );
+
+  const userId =
+    await getFirebaseUserId(
+      request,
+      env,
+      String(
+        body.user_id || ""
+      ).trim()
+    );
+
+  const conversationId =
     String(
-      body.memory || ""
+      body.conversation_id || ""
     ).trim();
 
   if (
     !userId ||
-    !memory
+    !conversationId
   ) {
     return json({
       ok: false,
       error:
-        "user_id و memory مطلوبان."
+        "المستخدم والمحادثة مطلوبان."
     }, 400);
   }
 
-  await saveUser(
-    env.DB,
-    userId
-  );
-
-  await saveMemory(
+  await deleteConversation(
     env.DB,
     userId,
-    memory
+    conversationId
   );
 
   return json({
     ok: true
   });
 }
+
+/* =========================
+   Reminders
+========================= */
+
+async function createReminder(
+  db,
+  userId,
+  data
+) {
+  const id =
+    String(
+      data.id ||
+      crypto.randomUUID()
+    );
+
+  const text =
+    String(
+      data.text || ""
+    ).trim();
+
+  const dueAt =
+    String(
+      data.due_at || ""
+    ).trim();
+
+  const timezone =
+    String(
+      data.timezone ||
+      "UTC"
+    ).trim();
+
+  const recurrence =
+    data.recurrence
+      ? String(data.recurrence)
+      : null;
+
+  if (
+    !text ||
+    !dueAt
+  ) {
+    throw new Error(
+      "نص التذكير وموعده مطلوبان."
+    );
+  }
+
+  await db.prepare(`
+    INSERT INTO reminders
+    (
+      id,
+      user_id,
+      text,
+      due_at,
+      timezone,
+      recurrence,
+      completed,
+      created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, 0, ?)
+  `).bind(
+    id,
+    userId,
+    text,
+    dueAt,
+    timezone,
+    recurrence,
+    nowISO()
+  ).run();
+
+  return id;
+}
+
+async function getReminders(
+  db,
+  userId
+) {
+  const result =
+    await db.prepare(`
+      SELECT id,
+             text,
+             due_at,
+             timezone,
+             recurrence,
+             completed,
+             created_at
+      FROM reminders
+      WHERE user_id = ?
+      ORDER BY due_at ASC
+      LIMIT 200
+    `).bind(
+      userId
+    ).all();
+
+  return result.results || [];
+}
+
+async function completeReminder(
+  db,
+  userId,
+  reminderId
+) {
+  await db.prepare(`
+    UPDATE reminders
+    SET completed = 1
+    WHERE id = ?
+      AND user_id = ?
+  `).bind(
+    reminderId,
+    userId
+  ).run();
+}
+
+async function deleteReminder(
+  db,
+  userId,
+  reminderId
+) {
+  await db.prepare(`
+    DELETE FROM reminders
+    WHERE id = ?
+      AND user_id = ?
+  `).bind(
+    reminderId,
+    userId
+  ).run();
+}
+
+async function handleReminderAction(
+  request,
+  env,
+  body
+) {
+  if (!env.DB) {
+    return json({
+      ok: false,
+      error:
+        "D1 binding DB غير موجود."
+    }, 500);
+  }
+
+  await ensureDatabase(
+    env.DB
+  );
+
+  const userId =
+    await getFirebaseUserId(
+      request,
+      env,
+      String(
+        body.user_id || ""
+      ).trim()
+    );
+
+  if (!userId) {
+    return json({
+      ok: false,
+      error:
+        "تسجيل الدخول مطلوب."
+    }, 401);
+  }
+
+  const action =
+    String(
+      body.reminder_action || ""
+    ).trim();
+
+  if (
+    action ===
+    "create"
+  ) {
+    const id =
+      await createReminder(
+        env.DB,
+        userId,
+        body
+      );
+
+    return json({
+      ok: true,
+      reminder_id: id
+    });
+  }
+
+  if (
+    action ===
+    "list"
+  ) {
+    const reminders =
+      await getReminders(
+        env.DB,
+        userId
+      );
+
+    return json({
+      ok: true,
+      reminders
+    });
+  }
+
+  if (
+    action ===
+    "complete"
+  ) {
+    await completeReminder(
+      env.DB,
+      userId,
+      String(body.reminder_id)
+    );
+
+    return json({
+      ok: true
+    });
+  }
+
+  if (
+    action ===
+    "delete"
+  ) {
+    await deleteReminder(
+      env.DB,
+      userId,
+      String(body.reminder_id)
+    );
+
+    return json({
+      ok: true
+    });
+  }
+
+  return json({
+    ok: false,
+    error:
+      "إجراء تذكير غير معروف."
+  }, 400);
+}
+
+/* =========================
+   Cron
+========================= */
+
+async function processReminders(
+  env
+) {
+  if (!env.DB) {
+    console.error(
+      "Cron: D1 binding DB غير موجود."
+    );
+
+    return;
+  }
+
+  await ensureDatabase(
+    env.DB
+  );
+
+  const now =
+    nowISO();
+
+  const result =
+    await env.DB.prepare(`
+      SELECT id,
+             user_id,
+             text,
+             due_at,
+             timezone,
+             recurrence,
+             completed
+      FROM reminders
+      WHERE completed = 0
+        AND due_at <= ?
+      ORDER BY due_at ASC
+      LIMIT 100
+    `).bind(
+      now
+    ).all();
+
+  const reminders =
+    result.results || [];
+
+  /*
+    لا نرسل Push Notification من Worker
+    في هذه المرحلة.
+
+    نسجل أن التذكير أصبح مستحقًا.
+    الواجهة ستقرأ التذكيرات المستحقة
+    عند فتح التطبيق/مراجعته.
+  */
+
+  for (const reminder of reminders) {
+    console.log(
+      "Reminder due:",
+      reminder.id,
+      reminder.user_id,
+      reminder.text
+    );
+
+    /*
+      التذكير المتكرر:
+      لا نغيّر الموعد هنا حتى يتم تنفيذ
+      منطق التكرار في النسخة النهائية
+      للواجهة/الخلفية.
+
+      التذكير العادي يصبح مكتملًا.
+    */
+
+    if (!reminder.recurrence) {
+      await env.DB.prepare(`
+        UPDATE reminders
+        SET completed = 1
+        WHERE id = ?
+      `).bind(
+        reminder.id
+      ).run();
+    }
+  }
+}
+
+/* =========================
+   Worker
+========================= */
 
 export default {
   async fetch(
@@ -872,16 +1673,25 @@ export default {
           service: "Rafiq AI",
           status: "online",
 
-          /*
-            النموذج الأساسي الذي يبدأ به كل طلب.
-            قد ينتقل داخليًا إلى نموذج بديل
-            إذا كان الأساسي مشغولًا.
-          */
           model:
             GEMINI_MODELS[0],
 
           fallback_models:
-            GEMINI_MODELS.slice(1)
+            GEMINI_MODELS.slice(1),
+
+          features: {
+            chat: true,
+            memories: true,
+            conversations: true,
+            web_search: Boolean(
+              env.EXA_API_KEY
+            ),
+            reminders: true,
+            firebase:
+              Boolean(
+                env.FIREBASE_PROJECT_ID
+              )
+          }
         });
       }
 
@@ -923,7 +1733,8 @@ export default {
       ) {
         return await handleChat(
           request,
-          env
+          env,
+          body
         );
       }
 
@@ -931,19 +1742,10 @@ export default {
         action ===
         "get_memories"
       ) {
-        return await getMemories(
+        return await handleGetMemories(
           request,
-          env
-        );
-      }
-
-      if (
-        action ===
-        "delete_memory"
-      ) {
-        return await handleDeleteMemory(
-          request,
-          env
+          env,
+          body
         );
       }
 
@@ -953,7 +1755,52 @@ export default {
       ) {
         return await handleSaveMemory(
           request,
-          env
+          env,
+          body
+        );
+      }
+
+      if (
+        action ===
+        "delete_memory"
+      ) {
+        return await handleDeleteMemory(
+          request,
+          env,
+          body
+        );
+      }
+
+      if (
+        action ===
+        "get_conversations"
+      ) {
+        return await handleGetConversations(
+          request,
+          env,
+          body
+        );
+      }
+
+      if (
+        action ===
+        "delete_conversation"
+      ) {
+        return await handleDeleteConversation(
+          request,
+          env,
+          body
+        );
+      }
+
+      if (
+        action ===
+        "reminder"
+      ) {
+        return await handleReminderAction(
+          request,
+          env,
+          body
         );
       }
 
@@ -976,5 +1823,15 @@ export default {
           "Internal server error."
       }, 500);
     }
+  },
+
+  async scheduled(
+    controller,
+    env,
+    ctx
+  ) {
+    ctx.waitUntil(
+      processReminders(env)
+    );
   }
 };
